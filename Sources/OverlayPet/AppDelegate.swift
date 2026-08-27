@@ -54,6 +54,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if config.activePet == DefaultPet.id {
             view.say("우클릭 → 캐릭터 가져오기", seconds: 8)
         }
+        refreshStaleNexonDataIfNeeded()
+    }
+
+    /// 메이플스토리 Open API 고지: 크롤링한 데이터는 30일 이내에 갱신해야 한다.
+    /// 활성 펫의 넥슨 데이터가 30일을 넘겼으면 조용히 다시 받는다.
+    /// 키가 없거나 한도(429)에 걸리면 이번엔 넘기고 다음 실행 때 다시 시도한다 —
+    /// 막힌 서버를 계속 두드리지 않기 위해서다.
+    private func refreshStaleNexonDataIfNeeded() {
+        guard let id = config.activePet, id != DefaultPet.id,
+              let m = activeManifest, m.isStale,
+              let key = APIKey.resolve(), !key.isEmpty else { return }
+        let name = m.displayName
+        view.say("캐릭터 정보 갱신 중…", seconds: 4)
+        Task.detached { [weak self] in
+            do {
+                _ = try await SheetBuilder.build(characterName: name, apiKey: key, weapon: false) { _ in }
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.loadActivePet()
+                    self.view.say("캐릭터 정보를 갱신했습니다", seconds: 4)
+                }
+            } catch {
+                let msg = error.isRateLimited
+                    ? "넥슨 API 호출 한도로 갱신을 미룹니다"
+                    : "캐릭터 갱신 실패: \(error.localizedDescription)"
+                await MainActor.run { [weak self] in self?.view.say(msg, seconds: 5) }
+            }
+        }
     }
 
     private func defaultOrigin(_ size: CGSize) -> NSPoint {
@@ -68,7 +96,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             let (manifest, sheet) = try SpriteSheet.load(petId: id)
             activeManifest = manifest
-            SkillNames.load(petId: id)
             bindings = PetBindings.load(id)
             view.setSheet(sheet)
             resizeWindow()
@@ -401,19 +428,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// 한글 스킬명 표 만들기 (본인 캐릭터 스킬 ↔ 위키 아이콘)
-    private func resolveSkillNames(force: Bool = false) async {
-        guard let id = config.activePet, force || !SkillNames.hasTable(petId: id), let key = APIKey.resolve() else { return }
-        do {
-            let r = try await SkillNames.resolve(petId: id, apiKey: key) { [weak self] msg in Task { @MainActor in self?.view.say(msg, seconds: 60) } }
-            view.say("한글 스킬명 \(r.matched)/\(r.total) 맞춤", seconds: 3)
-        } catch {
-            view.say("한글 스킬명 실패: \(error.localizedDescription)", seconds: 6)
-        }
-    }
-
     private func importJobSkills(_ job: String) async {
-        await resolveSkillNames()
         view.say("\(job) 스킬 목록 불러오는 중…", seconds: 30)
         let skills: [EffectImporter.Skill]
         do {

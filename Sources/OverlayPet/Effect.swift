@@ -22,7 +22,6 @@ struct EffectManifest: Codable {
     var sheetPath: String = "sheet.png"
     // 메뉴 표시용 메타 (가져오기 시 기록)
     var skill: String?
-    var koreanName: String?
     var variant: String?
     var tier: String?
     var tierOrder: Int?
@@ -37,7 +36,7 @@ struct EffectInfo {
     var tierOrder: Int { manifest.tierOrder ?? 99 }
     var skill: String { manifest.skill ?? name }
     /// 메뉴 표시용: 한글 이름이 있으면 한글, 없으면 영문
-    var skillTitle: String { manifest.koreanName ?? SkillNames.korean(skill) ?? skill }
+    var skillTitle: String { skill }
     var variant: String { manifest.variant ?? "" }
 
     static func all() -> [EffectInfo] {

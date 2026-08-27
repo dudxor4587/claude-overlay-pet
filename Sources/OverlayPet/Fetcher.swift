@@ -63,10 +63,10 @@ enum NexonClient {
             let body = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? [String: Any]
             let msg = body?["message"] as? String ?? ""
             switch status {
-            case 400, 404: throw PetError("캐릭터를 찾을 수 없습니다 (\(status)) \(msg)")
-            case 403: throw PetError("API 키가 올바르지 않습니다 (403) \(msg)")
-            case 429: throw PetError("요청이 너무 많습니다. 잠시 후 다시 시도 (429)")
-            default: throw PetError("넥슨 API 오류 (\(status)) \(msg)")
+            case 400, 404: throw PetError("캐릭터를 찾을 수 없습니다 (\(status)) \(msg)", status: status)
+            case 403: throw PetError("API 키가 올바르지 않습니다 (403) \(msg)", status: status)
+            case 429: throw PetError("요청이 너무 많습니다. 잠시 후 다시 시도 (429)", status: status)
+            default: throw PetError("넥슨 API 오류 (\(status)) \(msg)", status: status)
             }
         }
         guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw PetError("JSON 파싱 실패") }
@@ -78,11 +78,17 @@ enum NexonClient {
         for _ in 0..<3 {
             do {
                 let (data, resp) = try await URLSession.shared.data(from: url)
-                guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw PetError("프레임 다운로드 실패 \(url)") }
+                let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                // 429 는 재시도하지 않는다. 막힌 서버를 계속 두드리면 한도만 더 태운다.
+                if code == 429 { throw PetError("요청이 너무 많습니다 (429)", status: 429) }
+                guard code == 200 else { throw PetError("프레임 다운로드 실패 \(url)", status: code) }
                 guard let src = CGImageSourceCreateWithData(data as CFData, nil),
                       let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { throw PetError("프레임 디코드 실패") }
                 return img
-            } catch { last = error }
+            } catch {
+                if error.isRateLimited { throw error }
+                last = error
+            }
         }
         throw last!
     }
@@ -208,7 +214,8 @@ enum SheetBuilder {
             description: "\(ch.world) · \(ch.job) · Lv.\(ch.level)",
             spriteVersionNumber: 1, spritesheetPath: "spritesheet.png",
             frameWidth: cellW, frameHeight: cellH, columns: columns, rows: rows.count,
-            frameCounts: rows.map(\.frames), job: ch.job, ocid: ch.ocid)
+            frameCounts: rows.map(\.frames), job: ch.job, ocid: ch.ocid,
+            fetchedAt: Date().timeIntervalSince1970)
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(manifest).write(to: dir.appendingPathComponent("pet.json"))
         progress("설치 완료: \(id)")

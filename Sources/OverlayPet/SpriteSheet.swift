@@ -18,9 +18,22 @@ struct PetManifest: Codable {
     /// 넥슨 직업명 (이펙트 페이지 자동 선택용). 없으면 description "월드 · 직업 · Lv" 에서 추출.
     var job: String?
     var ocid: String?
+    /// 넥슨 API 에서 이 펫 데이터를 받은 시각 (epoch 초).
+    /// 메이플스토리 Open API 고지: "API를 통해 데이터를 크롤링한 경우 30일 이내에 갱신해야 할 의무가 있습니다."
+    /// 없으면(구버전 펫) 알 수 없음 → 갱신 대상으로 본다.
+    var fetchedAt: Double?
 
     static func load(petId: String) throws -> PetManifest {
         try JSONDecoder().decode(PetManifest.self, from: Data(contentsOf: Paths.petDirectory(petId).appendingPathComponent("pet.json")))
+    }
+
+    /// 고지에서 요구하는 갱신 주기.
+    static let refreshInterval: TimeInterval = 30 * 24 * 60 * 60
+
+    /// 넥슨 데이터가 30일을 넘겼는가. 취득 시각을 모르는 구버전 펫도 만료로 본다.
+    var isStale: Bool {
+        guard let fetchedAt else { return true }
+        return Date().timeIntervalSince1970 - fetchedAt >= Self.refreshInterval
     }
 
     var jobName: String? {
@@ -97,8 +110,17 @@ struct SpriteSheet {
 
 struct PetError: LocalizedError {
     let message: String
-    init(_ m: String) { message = m }
+    /// HTTP 상태 코드 (있을 때만). 429 를 재시도 대상에서 빼는 데 쓴다.
+    let status: Int?
+    init(_ m: String, status: Int? = nil) { message = m; self.status = status }
     var errorDescription: String? { message }
+
+    /// 넥슨이 호출 한도를 막은 상태. 재시도하면 한도를 더 태우기만 한다.
+    var isRateLimited: Bool { status == 429 }
+}
+
+extension Error {
+    var isRateLimited: Bool { (self as? PetError)?.isRateLimited == true }
 }
 
 enum Raster {

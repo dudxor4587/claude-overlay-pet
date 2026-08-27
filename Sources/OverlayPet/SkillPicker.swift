@@ -25,7 +25,7 @@ final class SkillPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         }
         groups = order.map { key in
             let vs = map[key]!, f = vs[0], base = f.split.skill
-            let title = SkillNames.korean(base).map { "\($0)  (\(base))" } ?? base
+            let title = base
             return Group(tier: f.tier, tierOrder: f.tierOrder, skill: base, title: title, variants: vs)
         }.sorted { ($0.tierOrder, $0.title) < ($1.tierOrder, $1.title) }
         installed = Set(EffectInfo.all().map(\.skill))

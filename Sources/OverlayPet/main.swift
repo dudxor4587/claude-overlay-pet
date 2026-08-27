@@ -97,7 +97,6 @@ enum Main {
                 // URL 이 없으면 활성 펫의 직업(경로) 스킬
                 var jobName: String?
                 let petId = Paths.overridePet ?? Config.load().activePet
-                SkillNames.load(petId: petId)
                 if url == nil {
                     guard let id = petId, let m = try? PetManifest.load(petId: id), let job = m.jobName else {
                         fail("활성 펫에 직업 정보가 없습니다. effect fetch <페이지URL> 로 지정하세요.")
@@ -147,25 +146,9 @@ enum Main {
                 }
             case "split":
                 // 디버그: 파일명 → (스킬, 변형)
-                SkillNames.load(petId: Paths.overridePet ?? Config.load().activePet)
                 for raw in sub.dropFirst() {
                     let sk = EffectImporter.Skill(name: raw, frames: [], tier: "", tierOrder: 0, path: nil, pathIndex: 0)
-                    print(raw, "→", sk.split, "| known:", SkillNames.isKnownSkill(sk.split.skill), "| display:", sk.displayName)
-                }
-            case "names":
-                // 한글 스킬명 표 (다시) 만들기: effect names [petId]
-                guard let id = sub.count >= 2 ? sub[1] : Config.load().activePet else { fail("활성 펫이 없습니다") }
-                guard let key = APIKey.resolve() else { fail("NEXON_API_KEY 필요 (.env)") }
-                let sem = DispatchSemaphore(value: 0)
-                var result: Result<(matched: Int, total: Int), Error>!
-                Task.detached {
-                    do { result = .success(try await SkillNames.resolve(petId: id, apiKey: key) { print($0) }) } catch { result = .failure(error) }
-                    sem.signal()
-                }
-                sem.wait()
-                switch result! {
-                case .success(let r): print("한글 스킬명 \(r.matched)/\(r.total) → \(SkillNames.fileURL(petId: id).path)")
-                case .failure(let e): fail(e.localizedDescription)
+                    print(raw, "→", sk.split, "| display:", sk.displayName)
                 }
             case "set":
                 guard sub.count >= 3 else { fail("usage: effect set <state> <name[,name…]|none>") }
@@ -181,7 +164,7 @@ enum Main {
                 }
                 attempt { try b.save(pet) }
                 print("\(sub[1]) → \(sub[2])")
-            default: fail("usage: effect list | fetch [URL] [--tiers 4,5,hyper | --skill NAME] [--state S] | names | set <state> <name|none>")
+            default: fail("usage: effect list | fetch [URL] [--tiers 4,5,hyper | --skill NAME] [--state S] | set <state> <name|none>")
             }
         case "state":
             // 디버그: state <name> [message]
@@ -199,7 +182,6 @@ enum Main {
               effect list               설치된 이펙트 목록
               effect fetch [페이지URL] [--tiers 4,5,hyper | --all | --skill NAME] [--state S]   스킬 이펙트 가져오기 (URL 없으면 활성 펫 직업)
               effect set <state> <name|none>              상태에 이펙트 연결
-              effect names              활성 펫 스킬 한글 이름 표 만들기 (캐릭터 가져올 때 자동)
               state <name> [msg]        상태 파일 직접 쓰기 (테스트)
 
             데이터: \(Paths.root.path)

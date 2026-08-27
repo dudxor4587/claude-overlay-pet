@@ -11,3 +11,6 @@ build/
 *.zip
 pets/
 effects/
+
+# 개인 권한 설정 (커밋 대상 아님)
+.claude/settings.local.json

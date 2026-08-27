@@ -8,6 +8,10 @@ import UniformTypeIdentifiers
 /// 차수·전직 경로가 나뉘어 있어 그 구조를 그대로 가져온다.
 /// 사용자가 요청할 때 런타임에만 받는다. 에셋 저작권은 원저작자에게 있으며 레포에 넣지 않는다.
 enum EffectImporter {
+    /// 같은 페이지에서 "변형 어휘로 잘라 얻은" 스킬명들 (소문자).
+    /// 예전엔 위키 스킬 목록(SkillNames.known)이 하던 일을, 페이지 자체 데이터로 대신한다.
+    static var observedSkills = Set<String>()
+
     static let maxFrameSide = 512
     static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 
@@ -25,40 +29,57 @@ enum EffectImporter {
             // 파일명이 "Combo-Instinct-Effect-1" 일 수도, "Combo Instinct Effect 1" 일 수도 있다
             let tokens = decoded.split(whereSeparator: { $0 == "-" || $0 == " " || $0 == "_" }).map(String.init)
             // 숫자·"Effect2"·"Hit1" 같은 토큰부터 변형으로 본다
-            func isVariant(_ t: String) -> Bool {
-                let l = t.lowercased()
-                if Int(l) != nil { return true }
-                let word = l.replacingOccurrences(of: #"\d+$"#, with: "", options: .regularExpression)
-                return Self.variantWords.contains(word)
+            func isVariant(_ t: String) -> Bool { Self.isVariantToken(t) }
+            // 변형 어휘로 자른다. 첫 토큰은 항상 스킬명 ("Arrow Blow Arrow", "Combo Attack Effect")
+            if let i = tokens.indices.dropFirst().first(where: { isVariant(tokens[$0]) }) {
+                return (tokens[..<i].joined(separator: " "), tokens[i...].joined(separator: " "))
             }
-            // 1) 위키 스킬 목록에 있는 이름과 가장 길게 일치하는 접두어 ("Arrow Blow Arrow" → "Arrow Blow" + "Arrow")
+            // 변형 어휘로 못 잘랐을 때: 같은 페이지에 존재하는 더 짧은 스킬명이 접두어면 거기서 자른다.
+            // ("Cardinal Blast Enhancement Arrow" → "Cardinal Blast Enhancement" + "Arrow")
+            // 접두어가 실제 스킬로 관찰됐을 때만 자르므로 "Bat Affinity III"·"Evil Eye of Domination"
+            // 같은 별개 스킬은 건드리지 않는다.
             if tokens.count > 1 {
                 for cut in stride(from: tokens.count - 1, through: 1, by: -1) {
                     let head = tokens[..<cut].joined(separator: " ")
-                    if SkillNames.isKnownSkill(head) { return (head, tokens[cut...].joined(separator: " ")) }
+                    if EffectImporter.observedSkills.contains(head.lowercased()) {
+                        return (head, tokens[cut...].joined(separator: " "))
+                    }
                 }
-            }
-            // 2) 변형 어휘
-            // 첫 토큰은 항상 스킬명 ("Arrow Blow Arrow", "Combo Attack Effect")
-            if let i = tokens.indices.dropFirst().first(where: { isVariant(tokens[$0]) }) {
-                return (tokens[..<i].joined(separator: " "), tokens[i...].joined(separator: " "))
             }
             return (tokens.joined(separator: " "), "")
         }
         var displayName: String {
             let s = split
-            let title = SkillNames.korean(s.skill).map { "\($0) (\(s.skill))" } ?? s.skill
-            return s.variant.isEmpty ? title : "\(title) · \(s.variant)"
+            return s.variant.isEmpty ? s.skill : "\(s.skill) · \(s.variant)"
         }
         static let variantWords: Set<String> = ["effect", "hit", "ball", "repeat", "mob", "tile", "tiles", "special", "summon", "screen",
                                                 "affect", "die", "stand", "front", "back", "keydown", "prepare", "end", "loop", "start",
                                                 "text", "after", "before", "charge", "buff", "cast", "attack", "projectile", "level", "lv",
                                                 "fx", "affected", "pre", "move", "fly", "summoned", "knockback", "stun", "dead", "skill",
-                                                "down", "up", "left", "right", "key", "downkey", "customeffect", "frameeffect", "shootobj", "effected", "finish"]
+                                                "down", "up", "left", "right", "key", "downkey", "customeffect", "frameeffect", "shootobj", "effected", "finish",
+                                                // 아래는 실제 파일명에서 관찰된 자산 변형 꼬리
+                                                "keydownend", "layer", "list", "object", "bullet", "arrow", "number", "lvl",
+                                                "ecteffect", "specialaffected", "pronestab", "swing", "stab", "alert", "barrier",
+                                                "mode", "boost", "revamp", "jump", "heal", "body", "critical", "star", "arch"]
+
+        /// "SwingT2" "StabTF" "LVL120" "Keydownend0" 처럼 꼬리에 붙는 코드성 토큰.
+        static func isVariantToken(_ t: String) -> Bool {
+            let l = t.lowercased()
+            if Int(l) != nil { return true }
+            if variantWords.contains(l) { return true }
+            // 뒤에 붙는 꼬리를 떼고 다시 확인. 패턴을 하나씩 따로 시도한다 —
+            // 한 정규식에 `t\d+|\d+` 로 묶으면 "effect0" 에서 "t0" 을 먹어 "effec" 가 된다.
+            for pat in [#"\d+$"#, #"t\d+$"#, #"tf$"#] {
+                let stripped = l.replacingOccurrences(of: pat, with: "", options: .regularExpression)
+                if stripped != l, !stripped.isEmpty, variantWords.contains(stripped) { return true }
+            }
+            return false
+        }
     }
 
     /// 여러 페이지(직업 + 5차 공통)를 합친다. 이름이 겹치면 앞 페이지 것을 쓴다.
     static func listSkills(pages: [URL]) async throws -> [Skill] {
+        observedSkills = []   // 직업이 바뀌면 다른 직업 이름으로 잘리지 않게 초기화
         var out: [Skill] = [], seen = Set<String>()
         var firstError: Error?
         for p in pages {
@@ -113,6 +134,7 @@ enum EffectImporter {
             try? await Task.sleep(nanoseconds: UInt64(800_000_000 * (attempt + 1)))
         }
         guard let html else { throw PetError("페이지를 불러오지 못했습니다 (\(lastStatus))") }
+        let slug = pageURL.pathComponents.last { $0 != "/" && !$0.isEmpty } ?? ""
         // 섹션 제목과 이미지 URL 을 문서 순서대로 훑는다. HTML 이 minify 돼 있어 속성 따옴표가 없을 수 있다.
         let regex = try NSRegularExpression(
             pattern: #"su-spoiler-title[^>]*>(?:<span[^>]*></span>)?([^<]+)</div>|(https?://[^\s"'<>,]+/resources/[^\s"'<>,]+?\.png)"#)
@@ -123,10 +145,18 @@ enum EffectImporter {
         var currentPath: String?, currentPathIndex = 0
         var groups: [String: (Section, [(Int, URL)])] = [:]
         var order: [String] = []
+        var sectionCount = 0
 
         for m in regex.matches(in: html, range: NSRange(html.startIndex..., in: html)) {
             if let r = Range(m.range(at: 1), in: html) {
                 let title = html[r].trimmingCharacters(in: .whitespacesAndNewlines)
+                sectionCount += 1
+                // 비스트테이머 페이지만 섹션이 차수가 아니라 동물(Bear/Cat/Group/Hawk/Snow Leopard)이다.
+                // 동물은 경로로 남기고, 기본 선택(4차·하이퍼·5차)에 걸리도록 4차로 묶는다.
+                if slug == "beast-tamer" {
+                    section = Section(title: title, tier: "4차", tierOrder: 4, path: title, pathIndex: 0)
+                    continue
+                }
                 let (tier, tierOrder) = tierOf(title)
                 // "2nd Job Advancement - Assassin" 에서 새 경로 시작. 경로 이름은 4차 제목으로 갱신.
                 let branch = title.range(of: " - ").map { String(title[$0.upperBound...]).trimmingCharacters(in: .whitespaces) }
@@ -164,14 +194,32 @@ enum EffectImporter {
                 pending.removeAll()
             }
         }
-        return order.compactMap { name in
+        // 섹션이 하나도 없는 페이지는 차수를 슬러그에서 정한다 (아래 fallbackTier 주석 참고).
+        // 섹션이 하나라도 있으면 절대 손대지 않는다.
+        let fallback = sectionCount == 0 ? fallbackTier(forSlug: slug) : nil
+        let skills = order.compactMap { name -> Skill? in
             let (sec, list) = groups[name]!
             guard list.count >= 2 else { return nil }
             let fourth = lastFourth[name]
             let path = sec.path.map { fourth?.0 ?? $0 }
             return Skill(name: name, frames: list.sorted { $0.0 < $1.0 }.map(\.1),
-                         tier: sec.tier, tierOrder: sec.tierOrder, path: path, pathIndex: fourth?.1 ?? sec.pathIndex)
+                         tier: fallback?.0 ?? sec.tier, tierOrder: fallback?.1 ?? sec.tierOrder,
+                         path: path, pathIndex: fourth?.1 ?? sec.pathIndex)
         }
+        // 변형 어휘로 잘려 나온 스킬명을 모아둔다. 이후 split 이 접두어 보정에 쓴다.
+        // (observedSkills 가 비어 있는 1패스에서는 접두어 규칙이 동작하지 않으므로 결과가 안정적이다.)
+        for s in skills {
+            let sp = s.split
+            if !sp.variant.isEmpty { observedSkills.insert(sp.skill.lowercased()) }
+        }
+        return skills
+    }
+
+    /// mapleeditors 가 su-spoiler 마크업을 잃어버려 섹션이 0개인 페이지의 차수.
+    /// 전직 전 페이지(explorer·noblesse·citizen·demon)는 전부 기본(0차) 스킬이다.
+    /// 그 외 슬러그는 nil → 기존대로 "기타"(99).
+    static func fallbackTier(forSlug slug: String) -> (String, Int)? {
+        ["explorer", "noblesse", "citizen", "demon"].contains(slug) ? ("기본", 0) : nil
     }
 
     static func tierOf(_ title: String) -> (String, Int) {
@@ -235,7 +283,6 @@ enum EffectImporter {
         m.fps = fps; m.loop = false; m.anchor = "bottom"; m.scale = scale / shrink   // 줄인 만큼 표시 배율로 보정
         let sp = skill.split
         m.skill = sp.skill; m.variant = sp.variant; m.tier = skill.tier; m.tierOrder = skill.tierOrder; m.path = skill.path
-        m.koreanName = SkillNames.korean(sp.skill)
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(m).write(to: dir.appendingPathComponent("effect.json"))
         return name
