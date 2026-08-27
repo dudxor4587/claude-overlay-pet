@@ -183,11 +183,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sub.addItem(.separator())
                 for item in tierMenus(infos, action: #selector(assignEffect(_:)), tag: state) { sub.addItem(item) }
                 let item = NSMenuItem(title: "\(state) — \(AnimationMap.bubbleText[state] ?? state)", action: nil, keyEquivalent: "")
-                if let cur = config.effects[state] {
-                    let names = cur.split(separator: ",").map(String.init)
-                    if let info = infos.first(where: { $0.name == names[0] }) {
-                        item.title += "   [\(info.skillTitle)" + (names.count > 1 ? " · 전체" : (info.variant.isEmpty ? "" : " · " + info.variant)) + "]"
-                    }
+                if let cur = config.effects[state], let first = cur.split(separator: ",").first,
+                   let info = infos.first(where: { $0.name == String(first) }) {
+                    item.title += "   [\(info.skillTitle)]"
                 }
                 item.submenu = sub
                 assign.addItem(item)
@@ -259,7 +257,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: 이펙트
 
-    /// 차수 → 스킬 → 변형 3단 메뉴. tag 가 있으면 representedObject = [tag, name], 없으면 name.
+    /// 차수 → 스킬 2단 메뉴. 스킬을 고르면 조각 전부(소환수 제외)를 게임 순서로 재생한다.
+    /// tag 가 있으면 representedObject = [tag, "a,b,c"], 없으면 "a,b,c".
     private func tierMenus(_ infos: [EffectInfo], action: Selector, tag: String?) -> [NSMenuItem] {
         let byTier = Dictionary(grouping: infos, by: { $0.tier })
         let assigned = config.effects
@@ -267,33 +266,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let tierMenu = NSMenu()
             let bySkill = Dictionary(grouping: byTier[tier]!, by: { $0.skillTitle })
             for skill in bySkill.keys.sorted() {
-                let variants = bySkill[skill]!.sorted { $0.variant < $1.variant }
-                func leaf(_ info: EffectInfo, title: String) -> NSMenuItem {
-                    let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
-                    it.target = self
-                    it.representedObject = tag.map { [$0, info.name] as Any } ?? info.name
-                    if let tag, assigned[tag] == info.name { it.state = .on }
-                    return it
-                }
-                if variants.count == 1 {
-                    let v = variants[0]
-                    tierMenu.addItem(leaf(v, title: v.variant.isEmpty ? skill : "\(skill) · \(v.variant)"))
-                } else {
-                    let skillMenu = NSMenu()
-                    let allNames = variants.filter { !($0.variant.lowercased().contains("summon")) }.map(\.name)
-                    let all = allNames.joined(separator: ",")
-                    let allItem = NSMenuItem(title: "전체 (\(allNames.count)개, 게임 순서로 재생)", action: action, keyEquivalent: "")
-                    allItem.target = self
-                    allItem.representedObject = tag.map { [$0, all] as Any } ?? all
-                    if let tag, assigned[tag] == all { allItem.state = .on }
-                    skillMenu.addItem(allItem)
-                    skillMenu.addItem(.separator())
-                    for v in variants { skillMenu.addItem(leaf(v, title: v.variant.isEmpty ? "기본" : v.variant)) }
-                    let it = NSMenuItem(title: skill, action: nil, keyEquivalent: "")
-                    if let tag, let cur = assigned[tag], variants.contains(where: { cur.split(separator: ",").contains(Substring($0.name)) }) { it.state = .on }
-                    it.submenu = skillMenu
-                    tierMenu.addItem(it)
-                }
+                let pieces = bySkill[skill]!.filter { !$0.variant.lowercased().contains("summon") }.map(\.name).sorted()
+                guard !pieces.isEmpty else { continue }
+                let value = pieces.joined(separator: ",")
+                let it = NSMenuItem(title: skill, action: action, keyEquivalent: "")
+                it.target = self
+                it.representedObject = tag.map { [$0, value] as Any } ?? value
+                if let tag, let cur = assigned[tag], Set(cur.split(separator: ",").map(String.init)).isSubset(of: Set(pieces)) { it.state = .on }
+                tierMenu.addItem(it)
             }
             let it = NSMenuItem(title: "\(tier) (\(bySkill.count))", action: nil, keyEquivalent: "")
             it.submenu = tierMenu
