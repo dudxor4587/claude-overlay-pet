@@ -38,13 +38,15 @@ final class PetView: NSView {
     /// 동시에 재생 중인 이펙트들 (스킬 하나 = Effect + Hit + … 를 겹쳐서)
     private final class EffectPlayer {
         let effect: Effect
+        let offsetX: CGFloat
         let layer = CALayer()
         var frame = 0
         var timer: Timer?
-        init(_ e: Effect) { effect = e }
+        init(_ e: Effect, offsetX: CGFloat) { effect = e; self.offsetX = offsetX }
         deinit { timer?.invalidate(); layer.removeFromSuperlayer() }
     }
     private var players: [EffectPlayer] = []
+    private var scheduled: [DispatchWorkItem] = []
 
     private var dragOffset: NSPoint?
     var onMoved: ((NSPoint) -> Void)?
@@ -183,11 +185,21 @@ final class PetView: NSView {
 
     func playEffect(_ effect: Effect?) { playEffects(effect.map { [$0] } ?? []) }
 
-    /// 여러 변형을 한꺼번에 겹쳐 재생. 이전에 재생 중이던 것은 정리.
+    /// 스킬 조각들을 EffectSequencer 순서대로 재생. 이전에 재생 중이던 것은 정리.
     func playEffects(_ effects: [Effect]) {
         players.removeAll()
-        for e in effects {
-            let p = EffectPlayer(e)
+        scheduled.forEach { $0.cancel() }; scheduled.removeAll()
+        for item in EffectSequencer.plan(effects) {
+            if item.delay <= 0 { start(item.effect, offsetX: CGFloat(item.offsetX)); continue }
+            let w = DispatchWorkItem { [weak self] in self?.start(item.effect, offsetX: CGFloat(item.offsetX)) }
+            scheduled.append(w)
+            DispatchQueue.main.asyncAfter(deadline: .now() + item.delay, execute: w)
+        }
+    }
+
+    private func start(_ e: Effect, offsetX: CGFloat) {
+        do {
+            let p = EffectPlayer(e, offsetX: offsetX)
             p.layer.magnificationFilter = .nearest
             p.layer.contentsGravity = .resize
             p.layer.actions = spriteLayer.actions
@@ -216,7 +228,7 @@ final class PetView: NSView {
             let fit = min(1, bounds.width / w, (bounds.height - 8) / h)
             w *= fit; h *= fit
             let sp = spriteLayer.frame
-            let cx = sp.minX + bodyCenterX * scale + CGFloat(m.offsetX) * scale
+            let cx = sp.minX + bodyCenterX * scale + (CGFloat(m.offsetX) + p.offsetX) * scale
             let feet = sp.minY + footY * scale
             let y: CGFloat = m.anchor == "bottom" ? feet - h : (sp.minY + headInset * scale + feet) / 2 - h / 2
             p.layer.frame = CGRect(x: cx - w / 2, y: y - CGFloat(m.offsetY) * scale, width: w, height: h)

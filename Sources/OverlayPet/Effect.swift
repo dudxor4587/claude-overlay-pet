@@ -78,3 +78,31 @@ struct Effect {
             .sorted()
     }
 }
+
+/// 스킬 조각들을 게임 순서대로 배치한다.
+///   Prepare → Keydown 1,2… → Keydown End 1,2… 는 차례로, Effect/Ball 은 본 동작과 동시에, Hit 는 살짝 늦게 앞쪽에.
+enum EffectSequencer {
+    struct Item { let effect: Effect; let delay: Double; let offsetX: Double }
+
+    static func plan(_ effects: [Effect]) -> [Item] {
+        func v(_ e: Effect) -> String { (e.manifest.variant ?? "").lowercased().replacingOccurrences(of: " ", with: "") }
+        func dur(_ e: Effect) -> Double { Double(e.manifest.frames) / max(1, e.manifest.fps) }
+        func num(_ e: Effect) -> Int { Int(v(e).filter(\.isNumber)) ?? 0 }
+        let prepare = effects.filter { v($0).hasPrefix("prepare") }.sorted { num($0) < num($1) }
+        let keydownEnd = effects.filter { v($0).hasPrefix("keydownend") || v($0) == "end" }.sorted { num($0) < num($1) }
+        let keydown = effects.filter { v($0).hasPrefix("keydown") && !v($0).hasPrefix("keydownend") }.sorted { num($0) < num($1) }
+        let hits = effects.filter { v($0).hasPrefix("hit") }
+        let used = Set((prepare + keydownEnd + keydown + hits).map(\.name))
+        let rest = effects.filter { !used.contains($0.name) }
+
+        var items: [Item] = []
+        var t = 0.0
+        for p in prepare { items.append(Item(effect: p, delay: t, offsetX: 0)); t += dur(p) }
+        let mainStart = t
+        for k in keydown { items.append(Item(effect: k, delay: t, offsetX: 0)); t += dur(k) }
+        for k in keydownEnd { items.append(Item(effect: k, delay: t, offsetX: 0)); t += dur(k) }
+        for r in rest { items.append(Item(effect: r, delay: mainStart, offsetX: 0)) }
+        for h in hits { items.append(Item(effect: h, delay: mainStart + 0.15, offsetX: 40)) }   // 몬스터가 앞에 있는 것처럼
+        return items
+    }
+}
