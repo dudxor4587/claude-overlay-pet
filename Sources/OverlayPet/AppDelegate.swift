@@ -34,6 +34,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? self.config.save()
         }
         view.onRightClick = { [weak self] e in self?.showMenu(e) }
+        view.onHover = { [weak self] in
+            guard let self, !["sleep", "end"].contains(self.view.currentState) else { return }
+            self.view.playOnce(state: "notify")   // 손 흔들기
+        }
         window.orderFrontRegardless()
 
         if config.activePet == nil || !Pets.installed().contains(config.activePet!) {
@@ -80,8 +84,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: 상태 파일 감시
 
     private var lastConfigMTime: Date?
+    private var lastGalleryAt: TimeInterval = 0
+    private var galleryIndex = 0
+
+    /// 갤러리: 고른 스킬들을 간격마다 돌아가며 재생 (다른 이펙트 재생 중이면 건너뜀)
+    private func galleryTick() {
+        guard let g = config.gallery, !g.isEmpty else { return }
+        let now = Date().timeIntervalSince1970
+        guard now - lastGalleryAt >= (config.galleryInterval ?? 30), !view.isPlayingEffects else { return }
+        lastGalleryAt = now
+        galleryIndex = (galleryIndex + 1) % g.count
+        view.playEffects(effects(named: g[galleryIndex]))
+    }
 
     private func poll() {
+        galleryTick()
         // CLI(effect set 등)로 config.json 이 바뀌면 그대로 반영
         if let cm = (try? FileManager.default.attributesOfItem(atPath: Paths.config.path))?[.modificationDate] as? Date, cm != lastConfigMTime {
             if lastConfigMTime != nil { config = Config.load(); view.configure(config: config) }
@@ -199,6 +216,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let playItem = NSMenuItem(title: "이펙트 재생", action: nil, keyEquivalent: "")
             playItem.submenu = play
             menu.addItem(playItem)
+
+            // 갤러리: 체크한 스킬을 주기적으로 돌아가며 재생
+            let gal = NSMenu()
+            let interval = NSMenu()
+            for sec in [15.0, 30.0, 60.0, 120.0, 300.0] {
+                let it = NSMenuItem(title: sec < 60 ? "\(Int(sec))초" : "\(Int(sec / 60))분", action: #selector(setGalleryInterval(_:)), keyEquivalent: "")
+                it.target = self; it.representedObject = sec
+                it.state = (config.galleryInterval ?? 30) == sec ? .on : .off
+                interval.addItem(it)
+            }
+            let intervalItem = NSMenuItem(title: "재생 간격", action: nil, keyEquivalent: "")
+            intervalItem.submenu = interval
+            gal.addItem(intervalItem)
+            let clear = NSMenuItem(title: "모두 해제", action: #selector(clearGallery), keyEquivalent: "")
+            clear.target = self; gal.addItem(clear)
+            gal.addItem(.separator())
+            for item in tierMenus(infos, action: #selector(toggleGallery(_:)), tag: "gallery") { gal.addItem(item) }
+            let n = config.gallery?.count ?? 0
+            let galItem = NSMenuItem(title: "갤러리 (주기 재생)" + (n > 0 ? " · \(n)개" : ""), action: nil, keyEquivalent: "")
+            galItem.submenu = gal
+            menu.addItem(galItem)
         }
 
         menu.addItem(.separator())
@@ -272,7 +310,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let it = NSMenuItem(title: skill, action: action, keyEquivalent: "")
                 it.target = self
                 it.representedObject = tag.map { [$0, value] as Any } ?? value
-                if let tag, let cur = assigned[tag], Set(cur.split(separator: ",").map(String.init)).isSubset(of: Set(pieces)) { it.state = .on }
+                if tag == "gallery" {
+                    if (config.gallery ?? []).contains(value) { it.state = .on }
+                } else if let tag, let cur = assigned[tag], Set(cur.split(separator: ",").map(String.init)).isSubset(of: Set(pieces)) { it.state = .on }
                 tierMenu.addItem(it)
             }
             let it = NSMenuItem(title: "\(tier) (\(bySkill.count))", action: nil, keyEquivalent: "")
@@ -296,6 +336,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         config.effects[pair[0]] = pair[1].isEmpty ? nil : pair[1]
         try? config.save()
         if !pair[1].isEmpty { view.playEffects(effects(named: pair[1])) }
+    }
+
+    @objc private func toggleGallery(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        var g = config.gallery ?? []
+        if let i = g.firstIndex(of: pair[1]) { g.remove(at: i) } else { g.append(pair[1]); view.playEffects(effects(named: pair[1])) }
+        config.gallery = g
+        try? config.save()
+    }
+
+    @objc private func clearGallery() { config.gallery = []; try? config.save() }
+
+    @objc private func setGalleryInterval(_ sender: NSMenuItem) {
+        config.galleryInterval = sender.representedObject as? Double
+        try? config.save()
     }
 
     @objc private func testEffect(_ sender: NSMenuItem) {

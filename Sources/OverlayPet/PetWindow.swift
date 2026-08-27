@@ -51,6 +51,9 @@ final class PetView: NSView {
     private var dragOffset: NSPoint?
     var onMoved: ((NSPoint) -> Void)?
     var onRightClick: ((NSEvent) -> Void)?
+    var onHover: (() -> Void)?
+    private var hovering = false
+    private var lastHover: TimeInterval = 0
 
     // 레이아웃: 창을 스프라이트보다 넉넉히 잡아 큰 이펙트가 잘리지 않게 한다. 투명 영역은 클릭 통과.
     static let bubbleHeight: CGFloat = 110   // 세션 4줄까지
@@ -81,6 +84,27 @@ final class PetView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let over = spriteAlpha(at: p) > 8
+        if over && !hovering, Date().timeIntervalSince1970 - lastHover > 2.5 {
+            lastHover = Date().timeIntervalSince1970
+            onHover?()
+        }
+        hovering = over
+    }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+
+    /// 이펙트가 재생 중이거나 예약돼 있으면 true (갤러리가 겹치지 않게)
+    var isPlayingEffects: Bool { !players.isEmpty || pendingCount > 0 }
+    private var pendingCount = 0
 
     func configure(config: Config) {
         scale = CGFloat(config.scale)
@@ -188,11 +212,11 @@ final class PetView: NSView {
     /// 스킬 조각들을 EffectSequencer 순서대로 재생. 이전에 재생 중이던 것은 정리.
     func playEffects(_ effects: [Effect]) {
         players.removeAll()
-        scheduled.forEach { $0.cancel() }; scheduled.removeAll()
+        scheduled.forEach { $0.cancel() }; scheduled.removeAll(); pendingCount = 0
         for item in EffectSequencer.plan(effects) {
             if item.delay <= 0 { start(item.effect, offsetX: CGFloat(item.offsetX)); continue }
-            let w = DispatchWorkItem { [weak self] in self?.start(item.effect, offsetX: CGFloat(item.offsetX)) }
-            scheduled.append(w)
+            let w = DispatchWorkItem { [weak self] in self?.pendingCount -= 1; self?.start(item.effect, offsetX: CGFloat(item.offsetX)) }
+            scheduled.append(w); pendingCount += 1
             DispatchQueue.main.asyncAfter(deadline: .now() + item.delay, execute: w)
         }
     }
@@ -300,6 +324,7 @@ final class PetView: NSView {
 final class BubbleView: NSView {
     var lines: [String] = [] { didSet { needsDisplay = true } }
     override var isFlipped: Bool { true }
+
 
     override func draw(_ dirtyRect: NSRect) {
         guard !lines.isEmpty else { return }

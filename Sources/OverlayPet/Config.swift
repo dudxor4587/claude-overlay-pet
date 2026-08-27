@@ -15,6 +15,9 @@ struct Config: Codable {
     /// 상태 → 이펙트 이름 (~/.claude/pet/effects/<name>/)
     var effects: [String: String] = [:]
     var lastEffectPage: String?
+    /// 갤러리: 주기적으로 돌아가며 재생할 스킬들 (effects 값과 같은 "a,b,c" 형식)
+    var gallery: [String]?
+    var galleryInterval: Double?   // 초, 기본 30
     var canvasVersion: Int?   // 키가 없으면 디코딩이 실패하므로 Optional (nil = 1)
 
     struct Position: Codable { var x: Double; var y: Double }
