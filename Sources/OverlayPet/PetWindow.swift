@@ -45,7 +45,7 @@ final class PetView: NSView {
     var onRightClick: ((NSEvent) -> Void)?
 
     // 레이아웃: 아래 스프라이트, 위 말풍선
-    static let bubbleHeight: CGFloat = 64
+    static let bubbleHeight: CGFloat = 110   // 세션 4줄까지
     var spriteSize: CGSize {
         guard let s = sheet else { return CGSize(width: 192 * scale, height: 208 * scale) }
         return CGSize(width: CGFloat(s.frameWidth) * scale, height: CGFloat(s.frameHeight) * scale)
@@ -99,10 +99,20 @@ final class PetView: NSView {
 
     // MARK: 애니메이션
 
-    func play(state: String, force: Bool = false) {
+    /// 다른 세션 이벤트 등: 한 번만 재생하고 원래 상태로 돌아간다.
+    func playOnce(state: String) {
+        let back = interruptedState ?? currentState
+        play(state: state, force: true, once: true, then: back)
+        interruptedState = back
+    }
+    private var interruptedState: String?
+
+    func play(state: String, force: Bool = false, once: Bool? = nil, then: String? = nil) {
         guard force || state != currentState else { return }
+        if once == nil { interruptedState = nil }
         currentState = state
         spec = animSpecs[state] ?? animSpecs["idle"] ?? AnimationSpec(row: 0)
+        if let once { spec.once = once; spec.then = then }
         if let s = sheet, spec.row >= s.rows { spec.row = 0 }
         frameIndex = 0
         timer?.invalidate()
@@ -117,7 +127,7 @@ final class PetView: NSView {
         let count = max(1, s.frameCounts[min(spec.row, s.frameCounts.count - 1)])
         frameIndex += 1
         if frameIndex >= count {
-            if spec.once, let next = spec.then { play(state: next); return }
+            if spec.once, let next = spec.then { interruptedState = nil; play(state: next, force: true); return }
             frameIndex = 0
         }
         drawFrame()
@@ -163,11 +173,29 @@ final class PetView: NSView {
     // MARK: 말풍선
 
     private var bubbleTimer: Timer?
+    private var statusLines: [String] = []
+    private var transient: String?
+
+    /// 세션 상태 패널 (지속 표시). 비어 있으면 숨김.
+    func setStatus(_ lines: [String]) {
+        statusLines = lines
+        refreshBubble()
+    }
+
+    /// 일시 메시지: 잠깐 패널을 덮었다가 되돌린다.
     func say(_ text: String, seconds: Double) {
-        bubble.text = text
-        bubble.isHidden = false
+        transient = text
         bubbleTimer?.invalidate()
-        bubbleTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in self?.bubble.isHidden = true }
+        bubbleTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            self?.transient = nil; self?.refreshBubble()
+        }
+        refreshBubble()
+    }
+
+    private func refreshBubble() {
+        let lines = transient.map { [$0] } ?? statusLines
+        bubble.lines = lines
+        bubble.isHidden = lines.isEmpty
     }
 
     // MARK: 클릭 통과 / 드래그
@@ -203,21 +231,22 @@ final class PetView: NSView {
     override func rightMouseDown(with event: NSEvent) { onRightClick?(event) }
 }
 
-/// 둥근 말풍선. 시스템 알림 권한 없이 진행 상황을 보여준다.
+/// 둥근 말풍선. 시스템 알림 권한 없이 진행 상황을 보여준다. 여러 줄이면 세션 목록.
 final class BubbleView: NSView {
-    var text: String = "" { didSet { needsDisplay = true } }
+    var lines: [String] = [] { didSet { needsDisplay = true } }
     override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard !text.isEmpty else { return }
-        let para = NSMutableParagraphStyle(); para.alignment = .center; para.lineBreakMode = .byTruncatingTail
+        guard !lines.isEmpty else { return }
+        let text = lines.joined(separator: "\n")
+        let para = NSMutableParagraphStyle(); para.alignment = lines.count > 1 ? .left : .center; para.lineBreakMode = .byTruncatingTail
         let attrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 12, weight: .medium),
             .foregroundColor: NSColor.black, .paragraphStyle: para,
         ]
         let maxW = bounds.width - 16
-        let size = (text as NSString).boundingRect(with: NSSize(width: maxW - 20, height: 40), options: [.usesLineFragmentOrigin], attributes: attrs).size
-        let w = min(maxW, size.width + 24), h = min(44, size.height + 14)
+        let size = (text as NSString).boundingRect(with: NSSize(width: maxW - 20, height: bounds.height - 24), options: [.usesLineFragmentOrigin], attributes: attrs).size
+        let w = min(maxW, size.width + 24), h = min(bounds.height - 12, size.height + 14)
         let box = NSRect(x: (bounds.width - w) / 2, y: bounds.height - h - 10, width: w, height: h)
         let path = NSBezierPath(roundedRect: box, xRadius: 10, yRadius: 10)
         // 꼬리

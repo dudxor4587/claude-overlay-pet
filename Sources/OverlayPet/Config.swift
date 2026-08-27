@@ -33,6 +33,30 @@ struct Config: Codable {
     }
 }
 
+enum APIKey {
+    /// 우선순위: $NEXON_API_KEY > ./.env > ~/.claude/pet/.env > config.json
+    static func resolve() -> String? {
+        if let k = ProcessInfo.processInfo.environment["NEXON_API_KEY"], !k.isEmpty { return k }
+        for path in [".env", Paths.root.appendingPathComponent(".env").path] {
+            if let k = dotenv(path, "NEXON_API_KEY") { return k }
+        }
+        return Config.load().nexonApiKey
+    }
+
+    static func dotenv(_ path: String, _ key: String) -> String? {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard !t.hasPrefix("#"), let eq = t.firstIndex(of: "=") else { continue }
+            if t[..<eq].trimmingCharacters(in: .whitespaces) == key {
+                let v = t[t.index(after: eq)...].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                return v.isEmpty ? nil : v
+            }
+        }
+        return nil
+    }
+}
+
 /// 한 상태가 어떤 행을 어떻게 재생할지.
 struct AnimationSpec: Codable {
     var row: Int

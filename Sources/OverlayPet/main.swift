@@ -25,9 +25,8 @@ enum Main {
             }
         case "fetch":
             // fetch <캐릭터명> [--api-key KEY] [--weapon] [--use]
-            // 키 우선순위: --api-key > $NEXON_API_KEY > ./.env > config.json
             var name: String?, weapon = false, use = true
-            var apiKey = ProcessInfo.processInfo.environment["NEXON_API_KEY"] ?? dotenv("NEXON_API_KEY") ?? Config.load().nexonApiKey
+            var apiKey = APIKey.resolve()
             var it = args.dropFirst().makeIterator()
             while let a = it.next() {
                 switch a {
@@ -65,6 +64,12 @@ enum Main {
             var cfg = Config.load(); cfg.activePet = id
             attempt { try cfg.save() }
             print("활성 펫: \(id)")
+        case "default":
+            // 기본 펫(코드로 그린 고양이) 재생성 + 선택
+            attempt { try DefaultPet.generate(into: Paths.petDirectory(DefaultPet.id)) }
+            var cfg = Config.load(); cfg.activePet = DefaultPet.id
+            attempt { try cfg.save() }
+            print("기본 펫 생성: \(Paths.petDirectory(DefaultPet.id).path)")
         case "effects":
             let list = Effect.installed()
             print(list.isEmpty ? "설치된 이펙트 없음. \(Paths.effects.path)/<name>/effect.json + sheet.png 를 넣으세요." : list.joined(separator: "\n"))
@@ -96,20 +101,6 @@ enum Main {
             app.delegate = delegate
             app.run()
         }
-    }
-
-    /// 현재 디렉터리의 .env 에서 KEY=VALUE 한 줄 읽기
-    static func dotenv(_ key: String) -> String? {
-        guard let text = try? String(contentsOfFile: ".env", encoding: .utf8) else { return nil }
-        for line in text.split(separator: "\n") {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            guard !t.hasPrefix("#"), let eq = t.firstIndex(of: "=") else { continue }
-            if t[..<eq].trimmingCharacters(in: .whitespaces) == key {
-                let v = t[t.index(after: eq)...].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                return v.isEmpty ? nil : v
-            }
-        }
-        return nil
     }
 
     static func attempt(_ f: () throws -> Void) {

@@ -11,7 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastFileMTime: Date?
     private var fetching = false
     private var focusSession: String?
-    private static let passThrough: Set<String> = ["error", "notify"]
+    private static let passThrough: Set<String> = ["done", "error", "notify"]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         try? Paths.ensureDirectories()
@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         view = PetView(frame: .zero)
         view.configure(config: config)
-        let size = CGSize(width: max(view.spriteSize.width, 220), height: view.spriteSize.height + PetView.bubbleHeight)
+        let size = CGSize(width: max(view.spriteSize.width, 260), height: view.spriteSize.height + PetView.bubbleHeight)
         let origin = config.position.map { NSPoint(x: $0.x, y: $0.y) } ?? defaultOrigin(size)
         window = PetWindow(contentRect: NSRect(origin: origin, size: size))
         window.contentView = view
@@ -31,12 +31,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.onRightClick = { [weak self] e in self?.showMenu(e) }
         window.orderFrontRegardless()
 
+        if config.activePet == nil || !Pets.installed().contains(config.activePet!) {
+            config.activePet = DefaultPet.ensureInstalled()
+            try? config.save()
+        }
         loadActivePet()
         applyState(PetStateFile.read(), initial: true)
         watcher = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.poll() } }
         RunLoop.main.add(watcher!, forMode: .common)
 
-        if config.activePet == nil {
+        if config.activePet == DefaultPet.id {
             view.say("우클릭 → 캐릭터 가져오기", seconds: 8)
         }
     }
@@ -61,7 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func resizeWindow() {
-        let size = CGSize(width: max(view.spriteSize.width, 220), height: view.spriteSize.height + PetView.bubbleHeight)
+        let size = CGSize(width: max(view.spriteSize.width, 260), height: view.spriteSize.height + PetView.bubbleHeight)
         var f = window.frame; f.size = size
         window.setFrame(f, display: true)
     }
@@ -74,30 +78,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if mtime != lastFileMTime {
             lastFileMTime = mtime
             applyState(PetStateFile.read(), initial: false)
+        } else if !sessions.isEmpty, Int(Date().timeIntervalSince1970) % 10 == 0 {
+            refreshStatus()
         } else if let s = PetStateFile.read(), view.currentState != "sleep", view.currentState != "end",
                   Date().timeIntervalSince1970 - s.ts > config.sleepAfterSeconds {
             view.play(state: "sleep")
         }
     }
 
+    /// 프롬프트를 친 세션들을 추적해 말풍선에 목록으로 보여준다.
+    private struct Session { var cwd: String; var state: String; var message: String?; var ts: Double }
+    private var sessions: [String: Session] = [:]
+
     private func applyState(_ s: PetStateFile?, initial: Bool) {
         guard let s else { view.play(state: "idle"); return }
         let stale = Date().timeIntervalSince1970 - s.ts > config.sleepAfterSeconds
         if stale { view.play(state: s.state == "end" ? "end" : "sleep"); return }
-        // 세션 포커스: 마지막으로 프롬프트를 친 세션만 따라간다. 다른 세션은 error/notify 만 통과.
-        if let sid = s.sessionId {
-            if s.state == "prompt" || s.state == "start" || focusSession == nil { focusSession = sid }
-            if sid != focusSession && !Self.passThrough.contains(s.state) { lastStateTS = s.ts; return }
-            if s.state == "end", sid == focusSession { focusSession = nil }
-        }
-        view.play(state: s.state, force: !initial)
-        if !initial, s.ts != lastStateTS {
-            var text = s.message ?? AnimationMap.bubbleText[s.state] ?? s.state
-            if let cwd = s.cwd { text += " · \(cwd)" }
-            view.say(text, seconds: config.bubbleSeconds)
-            if let name = config.effects[s.state], let e = try? Effect.load(name: name) { view.playEffect(e) }
-        }
+        let isNew = !initial && s.ts != lastStateTS
         lastStateTS = s.ts
+
+        guard let sid = s.sessionId else {
+            // 세션 정보 없는 수동 이벤트 (state 커맨드 등)
+            view.play(state: s.state, force: !initial)
+            if isNew { view.say(s.message ?? AnimationMap.bubbleText[s.state] ?? s.state, seconds: config.bubbleSeconds) }
+            return
+        }
+
+        // 세션 목록 갱신
+        if s.state == "end" {
+            sessions[sid] = nil
+            if focusSession == sid { focusSession = nil }
+        } else {
+            sessions[sid] = Session(cwd: s.cwd ?? "?", state: s.state, message: s.message, ts: s.ts)
+        }
+        // 포커스: 마지막으로 프롬프트를 친 세션. 애니메이션은 포커스 세션을 따라간다.
+        if s.state == "prompt" || s.state == "start" || focusSession == nil { focusSession = sid }
+        if sid == focusSession {
+            view.play(state: s.state, force: !initial)
+            if isNew, let name = config.effects[s.state], let e = try? Effect.load(name: name) { view.playEffect(e) }
+        } else if isNew, Self.passThrough.contains(s.state) {
+            view.playOnce(state: s.state)   // 다른 세션의 완료·실패·알림은 1회만
+        }
+        refreshStatus()
+    }
+
+    /// 말풍선 세션 패널. 오래된 세션은 빠진다.
+    private func refreshStatus() {
+        let now = Date().timeIntervalSince1970
+        sessions = sessions.filter { now - $0.value.ts < config.sleepAfterSeconds }
+        let lines = sessions.sorted { $0.value.ts > $1.value.ts }.prefix(4).map { sid, s -> String in
+            let label = s.message ?? AnimationMap.bubbleText[s.state] ?? s.state
+            return (sid == focusSession ? "▶ " : "· ") + s.cwd + " — " + label
+        }
+        view.setStatus(lines)
     }
 
     // MARK: 메뉴
@@ -187,14 +220,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let box = NSStackView(frame: NSRect(x: 0, y: 0, width: 340, height: 84))
         box.orientation = .vertical; box.spacing = 8; box.alignment = .leading
         let key = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
-        key.placeholderString = "NEXON Open API 키"; key.stringValue = config.nexonApiKey ?? ""
+        key.placeholderString = "NEXON Open API 키 (.env 의 NEXON_API_KEY 자동 사용)"
+        key.stringValue = APIKey.resolve() ?? ""
         let name = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
         name.placeholderString = "캐릭터명"
         let weapon = NSButton(checkboxWithTitle: "무기 포함", target: nil, action: nil)
         for v in [key, name] { v.widthAnchor.constraint(equalToConstant: 340).isActive = true }
         box.addArrangedSubview(key); box.addArrangedSubview(name); box.addArrangedSubview(weapon)
         alert.accessoryView = box
-        alert.window.initialFirstResponder = name
+        alert.window.initialFirstResponder = key.stringValue.isEmpty ? key : name
 
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
