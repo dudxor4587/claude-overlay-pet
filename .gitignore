@@ -1,0 +1,13 @@
+.env
+.build/
+build/
+*.xcodeproj
+.DS_Store
+.swiftpm/
+
+# 에셋은 절대 커밋하지 않는다 (사용자 데이터는 ~/.claude/pet 에 있음)
+*.png
+*.gif
+*.zip
+pets/
+effects/
