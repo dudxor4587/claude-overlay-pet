@@ -51,7 +51,7 @@ enum AnimationMap {
         "prompt": AnimationSpec(row: SheetRow.think),
         "bash":   AnimationSpec(row: SheetRow.attack),
         "edit":   AnimationSpec(row: SheetRow.walk, speed: 1.5),
-        "notify": AnimationSpec(row: SheetRow.wave),
+        "notify": AnimationSpec(row: SheetRow.wave, once: true, then: "idle"),
         "error":  AnimationSpec(row: SheetRow.ghost),
         "done":   AnimationSpec(row: SheetRow.celebrate, once: true, then: "idle"),
         "end":    AnimationSpec(row: SheetRow.lie),

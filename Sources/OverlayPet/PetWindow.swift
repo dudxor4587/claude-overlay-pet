@@ -14,6 +14,7 @@ final class PetWindow: NSWindow {
         ignoresMouseEvents = false
         isReleasedWhenClosed = false
         hidesOnDeactivate = false
+        acceptsMouseMovedEvents = true   // 호버 감지
     }
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }

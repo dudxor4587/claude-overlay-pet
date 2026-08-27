@@ -229,6 +229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let intervalItem = NSMenuItem(title: "재생 간격", action: nil, keyEquivalent: "")
             intervalItem.submenu = interval
             gal.addItem(intervalItem)
+            let all = NSMenuItem(title: "모두 선택", action: #selector(selectAllGallery), keyEquivalent: "")
+            all.target = self; gal.addItem(all)
             let clear = NSMenuItem(title: "모두 해제", action: #selector(clearGallery), keyEquivalent: "")
             clear.target = self; gal.addItem(clear)
             gal.addItem(.separator())
@@ -347,6 +349,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func clearGallery() { config.gallery = []; try? config.save() }
+
+    /// 설치된 스킬 전부(소환수 조각 제외)를 갤러리에
+    @objc private func selectAllGallery() {
+        let bySkill = Dictionary(grouping: EffectInfo.all(), by: { "\($0.tierOrder)|\($0.skillTitle)" })
+        config.gallery = bySkill.keys.sorted().compactMap { key in
+            let pieces = bySkill[key]!.filter { !$0.variant.lowercased().contains("summon") }.map(\.name).sorted()
+            return pieces.isEmpty ? nil : pieces.joined(separator: ",")
+        }
+        try? config.save()
+    }
 
     @objc private func setGalleryInterval(_ sender: NSMenuItem) {
         config.galleryInterval = sender.representedObject as? Double
