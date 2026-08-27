@@ -22,7 +22,6 @@ final class PetWindow: NSWindow {
 /// 캐릭터 레이어 + 이펙트 레이어 + 말풍선. 투명 픽셀은 hitTest 에서 nil 을 돌려 아래 창으로 클릭이 통과한다.
 final class PetView: NSView {
     private let spriteLayer = CALayer()
-    private let effectLayer = CALayer()
     private let bubble = BubbleView()
 
     private(set) var sheet: SpriteSheet?
@@ -36,9 +35,16 @@ final class PetView: NSView {
     private var frameIndex = 0
     private var timer: Timer?
 
-    private var effect: Effect?
-    private var effectFrame = 0
-    private var effectTimer: Timer?
+    /// 동시에 재생 중인 이펙트들 (스킬 하나 = Effect + Hit + … 를 겹쳐서)
+    private final class EffectPlayer {
+        let effect: Effect
+        let layer = CALayer()
+        var frame = 0
+        var timer: Timer?
+        init(_ e: Effect) { effect = e }
+        deinit { timer?.invalidate(); layer.removeFromSuperlayer() }
+    }
+    private var players: [EffectPlayer] = []
 
     private var dragOffset: NSPoint?
     var onMoved: ((NSPoint) -> Void)?
@@ -64,16 +70,11 @@ final class PetView: NSView {
         spriteLayer.magnificationFilter = .nearest
         spriteLayer.minificationFilter = .trilinear
         spriteLayer.contentsGravity = .resize
-        effectLayer.magnificationFilter = .nearest
-        effectLayer.contentsGravity = .resize
-        effectLayer.isHidden = true
         layer?.addSublayer(spriteLayer)
-        layer?.addSublayer(effectLayer)
         bubble.isHidden = true
         addSubview(bubble)
         // 암묵적 애니메이션 끄기 (contentsRect 바꿀 때 슬라이드 방지)
         spriteLayer.actions = ["contents": NSNull(), "contentsRect": NSNull(), "bounds": NSNull(), "position": NSNull()]
-        effectLayer.actions = spriteLayer.actions
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -180,38 +181,46 @@ final class PetView: NSView {
 
     // MARK: 이펙트
 
-    func playEffect(_ effect: Effect?) {
-        effectTimer?.invalidate()
-        self.effect = effect
-        guard let e = effect else { effectLayer.isHidden = true; return }
-        effectLayer.contents = e.image
-        effectFrame = 0
-        effectLayer.isHidden = false
-        layoutEffect()
-        effectLayer.contentsRect = e.contentsRect(frame: 0)
-        effectTimer = Timer.scheduledTimer(withTimeInterval: 1 / max(1, e.manifest.fps), repeats: true) { [weak self] _ in
-            guard let self, let e = self.effect else { return }
-            self.effectFrame += 1
-            if self.effectFrame >= e.manifest.frames {
-                if e.manifest.loop { self.effectFrame = 0 } else { self.playEffect(nil); return }
+    func playEffect(_ effect: Effect?) { playEffects(effect.map { [$0] } ?? []) }
+
+    /// 여러 변형을 한꺼번에 겹쳐 재생. 이전에 재생 중이던 것은 정리.
+    func playEffects(_ effects: [Effect]) {
+        players.removeAll()
+        for e in effects {
+            let p = EffectPlayer(e)
+            p.layer.magnificationFilter = .nearest
+            p.layer.contentsGravity = .resize
+            p.layer.actions = spriteLayer.actions
+            p.layer.contents = e.image
+            p.layer.contentsRect = e.contentsRect(frame: 0)
+            layer?.addSublayer(p.layer)
+            players.append(p)
+            p.timer = Timer.scheduledTimer(withTimeInterval: 1 / max(1, e.manifest.fps), repeats: true) { [weak self, weak p] _ in
+                guard let self, let p else { return }
+                p.frame += 1
+                if p.frame >= e.manifest.frames {
+                    if e.manifest.loop { p.frame = 0 } else { self.players.removeAll { $0 === p }; return }
+                }
+                p.layer.contentsRect = e.contentsRect(frame: p.frame)
             }
-            self.effectLayer.contentsRect = e.contentsRect(frame: self.effectFrame)
+            RunLoop.main.add(p.timer!, forMode: .common)
         }
-        RunLoop.main.add(effectTimer!, forMode: .common)
+        layoutEffect()
     }
 
     private func layoutEffect() {
-        guard let e = effect else { return }
-        let m = e.manifest
-        var w = CGFloat(m.frameWidth) * scale * CGFloat(m.scale), h = CGFloat(m.frameHeight) * scale * CGFloat(m.scale)
-        // 창보다 크면 창에 맞춰 축소 (6차 오리진 같은 대형 이펙트)
-        let fit = min(1, bounds.width / w, (bounds.height - 8) / h)
-        w *= fit; h *= fit
-        let sp = spriteLayer.frame
-        let cx = sp.minX + bodyCenterX * scale + CGFloat(m.offsetX) * scale
-        let feet = sp.minY + footY * scale
-        let y: CGFloat = m.anchor == "bottom" ? feet - h : (sp.minY + headInset * scale + feet) / 2 - h / 2
-        effectLayer.frame = CGRect(x: cx - w / 2, y: y - CGFloat(m.offsetY) * scale, width: w, height: h)
+        for p in players {
+            let m = p.effect.manifest
+            var w = CGFloat(m.frameWidth) * scale * CGFloat(m.scale), h = CGFloat(m.frameHeight) * scale * CGFloat(m.scale)
+            // 창보다 크면 창에 맞춰 축소 (6차 오리진 같은 대형 이펙트)
+            let fit = min(1, bounds.width / w, (bounds.height - 8) / h)
+            w *= fit; h *= fit
+            let sp = spriteLayer.frame
+            let cx = sp.minX + bodyCenterX * scale + CGFloat(m.offsetX) * scale
+            let feet = sp.minY + footY * scale
+            let y: CGFloat = m.anchor == "bottom" ? feet - h : (sp.minY + headInset * scale + feet) / 2 - h / 2
+            p.layer.frame = CGRect(x: cx - w / 2, y: y - CGFloat(m.offsetY) * scale, width: w, height: h)
+        }
     }
 
     // MARK: 말풍선

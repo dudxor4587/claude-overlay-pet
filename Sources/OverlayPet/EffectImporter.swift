@@ -81,25 +81,6 @@ enum EffectImporter {
         })
     }
 
-    /// 스킬당 "Effect" 계열 변형만 남긴다 (Hit/Ball/Mob/Tile 은 제외). Effect 가 없으면 Screen, 그것도 없으면 첫 변형 하나.
-    static func primaryVariants(_ skills: [Skill]) -> [Skill] {
-        var byBase: [String: [Skill]] = [:]
-        var order: [String] = []
-        for s in skills {
-            let key = "\(s.tier)|\(s.split.skill)"
-            if byBase[key] == nil { order.append(key) }
-            byBase[key, default: []].append(s)
-        }
-        return order.flatMap { key -> [Skill] in
-            let vs = byBase[key]!
-            let effects = vs.filter { let v = $0.split.variant.lowercased(); return v.isEmpty || v.hasPrefix("effect") }
-            if !effects.isEmpty { return effects }
-            // 오리진처럼 Screen(전체 화면 연출)만 있는 스킬
-            let screens = vs.filter { $0.split.variant.lowercased().hasPrefix("screen") }
-            return screens.isEmpty ? [vs[0]] : screens
-        }
-    }
-
     /// 직업 경로에 맞는 스킬만: 공용 섹션(path nil) + 해당 경로
     static func filter(_ skills: [Skill], path: String?, pathIndex: Int) -> [Skill] {
         guard let path else { return skills }

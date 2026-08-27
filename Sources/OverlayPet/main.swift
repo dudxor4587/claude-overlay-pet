@@ -111,8 +111,7 @@ enum Main {
                         if let url { skills = try await EffectImporter.listSkills(pages: [url]) }
                         else { skills = try await JobPages.skills(forJob: jobName!) }
                         if all || tiers != nil {
-                            let primary = EffectImporter.primaryVariants(skills)
-                            let picked = tiers.map { t in primary.filter { t.contains($0.tier) } } ?? primary
+                            let picked = tiers.map { t in skills.filter { t.contains($0.tier) } } ?? skills
                             let names = await EffectImporter.installAll(picked) { print($0) }
                             print("\(names.count)개 설치 → \(Paths.effects.path)")
                             result = .success(nil); sem.signal(); return
@@ -160,12 +159,15 @@ enum Main {
                 case .failure(let e): fail(e.localizedDescription)
                 }
             case "set":
-                guard sub.count >= 3 else { fail("usage: effect set <state> <name|none>") }
+                guard sub.count >= 3 else { fail("usage: effect set <state> <name[,name…]|none>") }
                 var cfg = Config.load()
                 if sub[2] == "none" { cfg.effects[sub[1]] = nil }
                 else {
-                    guard Effect.installed().contains(sub[2]) else { fail("설치되지 않은 이펙트: \(sub[2])") }
-                    cfg.effects[sub[1]] = sub[2]
+                    // "a,b,c" 로 여러 변형을 겹쳐 재생
+                    let names = sub[2].split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+                    let installed = Effect.installed()
+                    for n in names where !installed.contains(n) { fail("설치되지 않은 이펙트: \(n)") }
+                    cfg.effects[sub[1]] = names.joined(separator: ",")
                 }
                 attempt { try cfg.save() }
                 print("\(sub[1]) → \(sub[2])")

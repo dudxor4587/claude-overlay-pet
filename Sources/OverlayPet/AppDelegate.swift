@@ -129,10 +129,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if s.state == "prompt" || s.state == "start" || focusSession == nil { focusSession = sid }
         if sid == focusSession {
             view.play(state: s.state, force: !initial)
-            if isNew, let name = config.effects[s.state], let e = try? Effect.load(name: name) { view.playEffect(e) }
+            if isNew { view.playEffects(effects(for: s.state)) }
         } else if isNew, Self.passThrough.contains(s.state) {
             view.playOnce(state: s.state)   // 다른 세션의 완료·실패·알림은 1회만
-            if let name = config.effects[s.state], let e = try? Effect.load(name: name) { view.playEffect(e) }
+            view.playEffects(effects(for: s.state))
         }
         refreshStatus()
     }
@@ -183,8 +183,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sub.addItem(.separator())
                 for item in tierMenus(infos, action: #selector(assignEffect(_:)), tag: state) { sub.addItem(item) }
                 let item = NSMenuItem(title: "\(state) — \(AnimationMap.bubbleText[state] ?? state)", action: nil, keyEquivalent: "")
-                if let cur = config.effects[state], let info = infos.first(where: { $0.name == cur }) {
-                    item.title += "   [\(info.skillTitle)\(info.variant.isEmpty ? "" : " · " + info.variant)]"
+                if let cur = config.effects[state] {
+                    let names = cur.split(separator: ",").map(String.init)
+                    if let info = infos.first(where: { $0.name == names[0] }) {
+                        item.title += "   [\(info.skillTitle)" + (names.count > 1 ? " · 전체" : (info.variant.isEmpty ? "" : " · " + info.variant)) + "]"
+                    }
                 }
                 item.submenu = sub
                 assign.addItem(item)
@@ -277,9 +280,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     tierMenu.addItem(leaf(v, title: v.variant.isEmpty ? skill : "\(skill) · \(v.variant)"))
                 } else {
                     let skillMenu = NSMenu()
+                    let all = variants.map(\.name).joined(separator: ",")
+                    let allItem = NSMenuItem(title: "전체 (\(variants.count)개 겹쳐 재생)", action: action, keyEquivalent: "")
+                    allItem.target = self
+                    allItem.representedObject = tag.map { [$0, all] as Any } ?? all
+                    if let tag, assigned[tag] == all { allItem.state = .on }
+                    skillMenu.addItem(allItem)
+                    skillMenu.addItem(.separator())
                     for v in variants { skillMenu.addItem(leaf(v, title: v.variant.isEmpty ? "기본" : v.variant)) }
                     let it = NSMenuItem(title: skill, action: nil, keyEquivalent: "")
-                    if let tag, variants.contains(where: { assigned[tag] == $0.name }) { it.state = .on }
+                    if let tag, let cur = assigned[tag], variants.contains(where: { cur.split(separator: ",").contains(Substring($0.name)) }) { it.state = .on }
                     it.submenu = skillMenu
                     tierMenu.addItem(it)
                 }
@@ -292,16 +302,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static let effectStates = ["start", "prompt", "bash", "edit", "notify", "error", "done", "end"]
 
+    /// config.effects 값은 "a,b,c" 처럼 여러 변형을 쉼표로 이을 수 있다 (스킬 전체 = Effect+Hit+…)
+    private func effects(for state: String) -> [Effect] {
+        (config.effects[state] ?? "").split(separator: ",").compactMap { try? Effect.load(name: String($0).trimmingCharacters(in: .whitespaces)) }
+    }
+    private func effects(named value: String) -> [Effect] {
+        value.split(separator: ",").compactMap { try? Effect.load(name: String($0)) }
+    }
+
     @objc private func assignEffect(_ sender: NSMenuItem) {
         guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
         config.effects[pair[0]] = pair[1].isEmpty ? nil : pair[1]
         try? config.save()
-        if !pair[1].isEmpty, let e = try? Effect.load(name: pair[1]) { view.playEffect(e) }
+        if !pair[1].isEmpty { view.playEffects(effects(named: pair[1])) }
     }
 
     @objc private func testEffect(_ sender: NSMenuItem) {
-        guard let name = sender.representedObject as? String, let e = try? Effect.load(name: name) else { return }
-        view.playEffect(e)
+        guard let value = sender.representedObject as? String else { return }
+        view.playEffects(effects(named: value))
     }
 
     /// 활성 펫의 직업 스킬 이펙트를 (다시) 받는다. 캐릭터 가져오기 때 자동으로도 호출.
@@ -336,7 +354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard !skills.isEmpty else { view.say("\(job) 스킬을 찾지 못했어", seconds: 5); return }
         view.say("\(skills.count)개 스킬 — 받을 스킬을 골라 줘", seconds: 30)
-        guard let picked = SkillPicker(skills: EffectImporter.primaryVariants(skills)).run(title: "\(job) 스킬 이펙트"), !picked.isEmpty else { view.say("취소", seconds: 2); return }
+        guard let picked = SkillPicker(skills: skills).run(title: "\(job) 스킬 이펙트"), !picked.isEmpty else { view.say("취소", seconds: 2); return }
         view.say("\(job) 스킬 \(picked.count)개 받는 중…", seconds: 60)
         let names = await EffectImporter.installAll(picked) { [weak self] msg in Task { @MainActor in self?.view.say(msg, seconds: 60) } }
         view.say("스킬 이펙트 \(names.count)개 준비 완료 · 우클릭 → 상태별 이펙트", seconds: 8)
