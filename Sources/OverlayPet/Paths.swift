@@ -7,12 +7,18 @@ enum Paths {
     static let config = root.appendingPathComponent("config.json")
     static let state = root.appendingPathComponent("state.json")
     static let pets = root.appendingPathComponent("pets", isDirectory: true)
-    static let effects = root.appendingPathComponent("effects", isDirectory: true)
+    /// 이펙트는 펫(캐릭터)별로 둔다: pets/<id>/effects. 활성 펫이 없으면 공용 폴더.
+    /// CLI 에서 `--pet` 으로 활성 펫이 아닌 펫을 다룰 때
+    static var overridePet: String?
+    static var effects: URL { effectsDirectory(overridePet ?? Config.load().activePet) }
+    static func effectsDirectory(_ petId: String?) -> URL {
+        petId.map { petDirectory($0).appendingPathComponent("effects", isDirectory: true) } ?? root.appendingPathComponent("effects", isDirectory: true)
+    }
     static let claudeSettings = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".claude/settings.json")
 
     static func ensureDirectories() throws {
-        for dir in [root, pets, effects] {
+        for dir in [root, pets] {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }

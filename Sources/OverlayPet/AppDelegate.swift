@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: PetWindow!
     private var view: PetView!
     private var config = Config.load()
+    private var bindings = PetBindings()
     private var watcher: Timer?
     private var lastStateTS: Double = 0
     private var lastFileMTime: Date?
@@ -44,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             config.activePet = DefaultPet.ensureInstalled()
             try? config.save()
         }
+        PetBindings.migrateIfNeeded(config: &config)
         loadActivePet()
         applyState(PetStateFile.read(), initial: true)
         watcher = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.poll() } }
@@ -67,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let (manifest, sheet) = try SpriteSheet.load(petId: id)
             activeManifest = manifest
             SkillNames.load(petId: id)
+            bindings = PetBindings.load(id)
             view.setSheet(sheet)
             resizeWindow()
         } catch {
@@ -89,7 +92,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 갤러리: 고른 스킬들을 간격마다 돌아가며 재생 (다른 이펙트 재생 중이면 건너뜀)
     private func galleryTick() {
-        guard let g = config.gallery, !g.isEmpty else { return }
+        let g = bindings.gallery
+        guard !g.isEmpty else { return }
         let now = Date().timeIntervalSince1970
         guard now - lastGalleryAt >= (config.galleryInterval ?? 30), !view.isPlayingEffects else { return }
         lastGalleryAt = now
@@ -101,7 +105,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         galleryTick()
         // CLI(effect set 등)로 config.json 이 바뀌면 그대로 반영
         if let cm = (try? FileManager.default.attributesOfItem(atPath: Paths.config.path))?[.modificationDate] as? Date, cm != lastConfigMTime {
-            if lastConfigMTime != nil { config = Config.load(); view.configure(config: config) }
+            if lastConfigMTime != nil { config = Config.load(); view.configure(config: config); bindings = PetBindings.load(config.activePet) }
             lastConfigMTime = cm
         }
         let attrs = try? FileManager.default.attributesOfItem(atPath: Paths.state.path)
@@ -195,12 +199,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let sub = NSMenu()
                 let none = NSMenuItem(title: "없음", action: #selector(assignEffect(_:)), keyEquivalent: "")
                 none.target = self; none.representedObject = [state, ""]
-                none.state = config.effects[state] == nil ? .on : .off
+                none.state = bindings.effects[state] == nil ? .on : .off
                 sub.addItem(none)
                 sub.addItem(.separator())
                 for item in tierMenus(infos, action: #selector(assignEffect(_:)), tag: state) { sub.addItem(item) }
                 let item = NSMenuItem(title: "\(state) — \(AnimationMap.bubbleText[state] ?? state)", action: nil, keyEquivalent: "")
-                if let cur = config.effects[state], let first = cur.split(separator: ",").first,
+                if let cur = bindings.effects[state], let first = cur.split(separator: ",").first,
                    let info = infos.first(where: { $0.name == String(first) }) {
                     item.title += "   [\(info.skillTitle)]"
                 }
@@ -235,10 +239,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             clear.target = self; gal.addItem(clear)
             gal.addItem(.separator())
             for item in tierMenus(infos, action: #selector(toggleGallery(_:)), tag: "gallery") { gal.addItem(item) }
-            let n = config.gallery?.count ?? 0
+            let n = bindings.gallery.count
             let galItem = NSMenuItem(title: "갤러리 (주기 재생)" + (n > 0 ? " · \(n)개" : ""), action: nil, keyEquivalent: "")
             galItem.submenu = gal
             menu.addItem(galItem)
+
+            let op = NSMenu()
+            for v in [1.0, 0.8, 0.6, 0.4, 0.25] {
+                let it = NSMenuItem(title: "\(Int(v * 100))%", action: #selector(setEffectOpacity(_:)), keyEquivalent: "")
+                it.target = self; it.representedObject = v
+                it.state = (config.effectOpacity ?? 1) == v ? .on : .off
+                op.addItem(it)
+            }
+            let opItem = NSMenuItem(title: "이펙트 투명도", action: nil, keyEquivalent: "")
+            opItem.submenu = op
+            menu.addItem(opItem)
         }
 
         menu.addItem(.separator())
@@ -301,7 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// tag 가 있으면 representedObject = [tag, "a,b,c"], 없으면 "a,b,c".
     private func tierMenus(_ infos: [EffectInfo], action: Selector, tag: String?) -> [NSMenuItem] {
         let byTier = Dictionary(grouping: infos, by: { $0.tier })
-        let assigned = config.effects
+        let assigned = bindings.effects
         return byTier.keys.sorted { (byTier[$0]!.first!.tierOrder, $0) < (byTier[$1]!.first!.tierOrder, $1) }.map { tier in
             let tierMenu = NSMenu()
             let bySkill = Dictionary(grouping: byTier[tier]!, by: { $0.skillTitle })
@@ -313,7 +328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 it.target = self
                 it.representedObject = tag.map { [$0, value] as Any } ?? value
                 if tag == "gallery" {
-                    if (config.gallery ?? []).contains(value) { it.state = .on }
+                    if bindings.gallery.contains(value) { it.state = .on }
                 } else if let tag, let cur = assigned[tag], Set(cur.split(separator: ",").map(String.init)).isSubset(of: Set(pieces)) { it.state = .on }
                 tierMenu.addItem(it)
             }
@@ -325,9 +340,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static let effectStates = ["start", "prompt", "bash", "edit", "notify", "error", "done", "end"]
 
-    /// config.effects 값은 "a,b,c" 처럼 여러 변형을 쉼표로 이을 수 있다 (스킬 전체 = Effect+Hit+…)
+    /// bindings.effects 값은 "a,b,c" 처럼 여러 변형을 쉼표로 이을 수 있다 (스킬 전체 = Effect+Hit+…)
     private func effects(for state: String) -> [Effect] {
-        (config.effects[state] ?? "").split(separator: ",").compactMap { try? Effect.load(name: String($0).trimmingCharacters(in: .whitespaces)) }
+        (bindings.effects[state] ?? "").split(separator: ",").compactMap { try? Effect.load(name: String($0).trimmingCharacters(in: .whitespaces)) }
     }
     private func effects(named value: String) -> [Effect] {
         value.split(separator: ",").compactMap { try? Effect.load(name: String($0)) }
@@ -335,29 +350,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func assignEffect(_ sender: NSMenuItem) {
         guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
-        config.effects[pair[0]] = pair[1].isEmpty ? nil : pair[1]
-        try? config.save()
+        bindings.effects[pair[0]] = pair[1].isEmpty ? nil : pair[1]
+        try? bindings.save(config.activePet)
         if !pair[1].isEmpty { view.playEffects(effects(named: pair[1])) }
     }
 
     @objc private func toggleGallery(_ sender: NSMenuItem) {
         guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
-        var g = config.gallery ?? []
+        var g = bindings.gallery
         if let i = g.firstIndex(of: pair[1]) { g.remove(at: i) } else { g.append(pair[1]); view.playEffects(effects(named: pair[1])) }
-        config.gallery = g
-        try? config.save()
+        bindings.gallery = g
+        try? bindings.save(config.activePet)
     }
 
-    @objc private func clearGallery() { config.gallery = []; try? config.save() }
+    @objc private func clearGallery() { bindings.gallery = []; try? bindings.save(config.activePet) }
 
     /// 설치된 스킬 전부(소환수 조각 제외)를 갤러리에
     @objc private func selectAllGallery() {
         let bySkill = Dictionary(grouping: EffectInfo.all(), by: { "\($0.tierOrder)|\($0.skillTitle)" })
-        config.gallery = bySkill.keys.sorted().compactMap { key in
+        bindings.gallery = bySkill.keys.sorted().compactMap { key in
             let pieces = bySkill[key]!.filter { !$0.variant.lowercased().contains("summon") }.map(\.name).sorted()
             return pieces.isEmpty ? nil : pieces.joined(separator: ",")
         }
+        try? bindings.save(config.activePet)
+    }
+
+    @objc private func setEffectOpacity(_ sender: NSMenuItem) {
+        config.effectOpacity = sender.representedObject as? Double
         try? config.save()
+        view.configure(config: config)
     }
 
     @objc private func setGalleryInterval(_ sender: NSMenuItem) {

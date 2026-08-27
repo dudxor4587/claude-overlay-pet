@@ -11,6 +11,7 @@ enum Hooks {
         ("UserPromptSubmit", nil, "prompt"),
         ("PreToolUse", "Bash", "bash"),
         ("PreToolUse", "Edit|Write|MultiEdit|NotebookEdit", "edit"),
+        ("PostToolUse", nil, "think"),          // 도구 끝남 → 다시 생각 중 (bash/edit 모션이 계속 안 돌게)
         ("Notification", nil, "notify"),
         ("PostToolUseFailure", nil, "error"),
         ("Stop", nil, "done"),

@@ -49,6 +49,7 @@ enum AnimationMap {
         "idle":   AnimationSpec(row: SheetRow.idle),
         "start":  AnimationSpec(row: SheetRow.celebrate, once: true, then: "idle"),
         "prompt": AnimationSpec(row: SheetRow.think),
+        "think":  AnimationSpec(row: SheetRow.think),
         "bash":   AnimationSpec(row: SheetRow.attack),
         "edit":   AnimationSpec(row: SheetRow.walk, speed: 1.5),
         "notify": AnimationSpec(row: SheetRow.wave, once: true, then: "idle"),
@@ -65,6 +66,7 @@ enum AnimationMap {
     static let bubbleText: [String: String] = [
         "start": "안녕! 세션 시작",
         "prompt": "생각 중…",
+        "think": "생각 중…",
         "bash": "명령 실행 중",
         "edit": "파일 수정 중",
         "notify": "확인해 줘!",

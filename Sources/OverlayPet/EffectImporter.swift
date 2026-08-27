@@ -22,7 +22,8 @@ enum EffectImporter {
         /// "Assassinate" / "Effect" 처럼 스킬명과 변형으로 나눈다.
         var split: (skill: String, variant: String) {
             let decoded = name.removingPercentEncoding ?? name
-            let tokens = decoded.split(separator: "-").map(String.init)
+            // 파일명이 "Combo-Instinct-Effect-1" 일 수도, "Combo Instinct Effect 1" 일 수도 있다
+            let tokens = decoded.split(whereSeparator: { $0 == "-" || $0 == " " || $0 == "_" }).map(String.init)
             // 숫자·"Effect2"·"Hit1" 같은 토큰부터 변형으로 본다
             func isVariant(_ t: String) -> Bool {
                 let l = t.lowercased()
@@ -30,7 +31,16 @@ enum EffectImporter {
                 let word = l.replacingOccurrences(of: #"\d+$"#, with: "", options: .regularExpression)
                 return Self.variantWords.contains(word)
             }
-            if let i = tokens.firstIndex(where: isVariant), i > 0 {
+            // 1) 위키 스킬 목록에 있는 이름과 가장 길게 일치하는 접두어 ("Arrow Blow Arrow" → "Arrow Blow" + "Arrow")
+            if tokens.count > 1 {
+                for cut in stride(from: tokens.count - 1, through: 1, by: -1) {
+                    let head = tokens[..<cut].joined(separator: " ")
+                    if SkillNames.isKnownSkill(head) { return (head, tokens[cut...].joined(separator: " ")) }
+                }
+            }
+            // 2) 변형 어휘
+            // 첫 토큰은 항상 스킬명 ("Arrow Blow Arrow", "Combo Attack Effect")
+            if let i = tokens.indices.dropFirst().first(where: { isVariant(tokens[$0]) }) {
                 return (tokens[..<i].joined(separator: " "), tokens[i...].joined(separator: " "))
             }
             return (tokens.joined(separator: " "), "")
@@ -42,7 +52,9 @@ enum EffectImporter {
         }
         static let variantWords: Set<String> = ["effect", "hit", "ball", "repeat", "mob", "tile", "tiles", "special", "summon", "screen",
                                                 "affect", "die", "stand", "front", "back", "keydown", "prepare", "end", "loop", "start",
-                                                "text", "after", "before", "charge", "buff", "cast", "attack", "projectile", "level", "lv"]
+                                                "text", "after", "before", "charge", "buff", "cast", "attack", "projectile", "level", "lv",
+                                                "fx", "affected", "pre", "move", "fly", "summoned", "knockback", "stun", "dead", "skill",
+                                                "down", "up", "left", "right", "key", "downkey", "customeffect", "frameeffect", "shootobj", "effected", "finish"]
     }
 
     /// 여러 페이지(직업 + 5차 공통)를 합친다. 이름이 겹치면 앞 페이지 것을 쓴다.
@@ -91,10 +103,16 @@ enum EffectImporter {
         var req = URLRequest(url: pageURL)
         req.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         req.setValue("text/html", forHTTPHeaderField: "Accept")
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200, let html = String(data: data, encoding: .utf8) else {
-            throw PetError("페이지를 불러오지 못했습니다 (\((resp as? HTTPURLResponse)?.statusCode ?? 0))")
+        var html: String?
+        var lastStatus = 0
+        for attempt in 0..<3 {   // 가끔 빈 응답이 와서 재시도
+            if let (data, resp) = try? await URLSession.shared.data(for: req) {
+                lastStatus = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                if lastStatus == 200, let h = String(data: data, encoding: .utf8), h.contains("/resources/") { html = h; break }
+            }
+            try? await Task.sleep(nanoseconds: UInt64(800_000_000 * (attempt + 1)))
         }
+        guard let html else { throw PetError("페이지를 불러오지 못했습니다 (\(lastStatus))") }
         // 섹션 제목과 이미지 URL 을 문서 순서대로 훑는다. HTML 이 minify 돼 있어 속성 따옴표가 없을 수 있다.
         let regex = try NSRegularExpression(
             pattern: #"su-spoiler-title[^>]*>(?:<span[^>]*></span>)?([^<]+)</div>|(https?://[^\s"'<>,]+/resources/[^\s"'<>,]+?\.png)"#)
@@ -135,24 +153,24 @@ enum EffectImporter {
         }
         // 4차 제목이 나중에 오므로, 2차·3차 섹션의 path 를 같은 그룹의 4차 이름으로 맞춘다.
         // (2nd - Assassin, 3rd - Hermit, 4th - Night Lord → 전부 "Night Lord")
-        var lastFourth: [String: String] = [:]   // 2차 이름 → 4차 이름 은 순서로 추적
+        var lastFourth: [String: (String, Int)] = [:]   // 2차·3차 스킬 → 뒤따르는 4차의 (경로명, 경로 번호)
         var pending: [String] = []
-        var resolvedPath: [String: String] = [:]
         for name in order {
             let sec = groups[name]!.0
             guard let p = sec.path else { continue }
-            if sec.title.hasPrefix("2nd") || sec.title.hasPrefix("3rd") { pending.append(name); resolvedPath[name] = p }
+            if sec.title.hasPrefix("2nd") || sec.title.hasPrefix("3rd") { pending.append(name) }
             else if sec.title.hasPrefix("4th") {
-                for q in pending { lastFourth[q] = p }
+                for q in pending { lastFourth[q] = (p, sec.pathIndex) }
                 pending.removeAll()
             }
         }
         return order.compactMap { name in
             let (sec, list) = groups[name]!
             guard list.count >= 2 else { return nil }
-            let path = sec.path.map { lastFourth[name] ?? $0 }
+            let fourth = lastFourth[name]
+            let path = sec.path.map { fourth?.0 ?? $0 }
             return Skill(name: name, frames: list.sorted { $0.0 < $1.0 }.map(\.1),
-                         tier: sec.tier, tierOrder: sec.tierOrder, path: path, pathIndex: sec.pathIndex)
+                         tier: sec.tier, tierOrder: sec.tierOrder, path: path, pathIndex: fourth?.1 ?? sec.pathIndex)
         }
     }
 

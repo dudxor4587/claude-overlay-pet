@@ -29,6 +29,7 @@ final class PetView: NSView {
     private var alpha: [UInt8]?
     private var scale: CGFloat = 0.6
     private var baseFPS: Double = 8
+    private var effectOpacity: Float = 1
 
     private var animSpecs: [String: AnimationSpec] = AnimationMap.defaults
     private(set) var currentState = "idle"
@@ -110,6 +111,8 @@ final class PetView: NSView {
     func configure(config: Config) {
         scale = CGFloat(config.scale)
         baseFPS = config.fps
+        effectOpacity = Float(config.effectOpacity ?? 1)
+        players.forEach { $0.layer.opacity = effectOpacity }
         animSpecs = AnimationMap.resolve(config)
         needsLayout = true
     }
@@ -229,6 +232,7 @@ final class PetView: NSView {
             p.layer.contentsGravity = .resize
             p.layer.actions = spriteLayer.actions
             p.layer.contents = e.image
+            p.layer.opacity = effectOpacity
             p.layer.contentsRect = e.contentsRect(frame: 0)
             layer?.addSublayer(p.layer)
             players.append(p)

@@ -60,16 +60,58 @@ enum JobPages {
         "비스트테이머": Entry(slugs: ["beast-tamer"], wiki: "Beast Tamer"), "모쿠아": Entry(slugs: ["mo-xuan"]), "젠": Entry(slugs: ["zen"]),
     ]
 
-    /// "아크메이지(불,독)" 처럼 그대로 들어오거나, 공백·전각괄호가 섞여도 맞춘다.
+    /// 1~3차 직업명 → 4차 직업명 (넥슨 character_class 는 현재 차수 이름으로 온다)
+    static let aliases: [String: String] = [
+        "검사": "히어로", "파이터": "히어로", "크루세이더": "히어로",
+        "페이지": "팔라딘", "나이트": "팔라딘",
+        "스피어맨": "다크나이트", "버서커": "다크나이트",
+        "위자드(불,독)": "아크메이지(불,독)", "메이지(불,독)": "아크메이지(불,독)",
+        "위자드(썬,콜)": "아크메이지(썬,콜)", "메이지(썬,콜)": "아크메이지(썬,콜)",
+        "클레릭": "비숍", "프리스트": "비숍",
+        "헌터": "보우마스터", "레인저": "보우마스터",
+        "사수": "신궁", "저격수": "신궁",
+        "에인션트아처": "패스파인더",
+        "어쌔신": "나이트로드", "허밋": "나이트로드",
+        "시프": "섀도어", "시프마스터": "섀도어",
+        "세미듀어러": "듀얼블레이드", "듀어러": "듀얼블레이드", "듀얼마스터": "듀얼블레이드", "슬래셔": "듀얼블레이드",
+        "인파이터": "바이퍼", "버커니어": "바이퍼",
+        "건슬링거": "캡틴", "발키리": "캡틴",
+        "캐논슈터": "캐논슈터", "캐논블래스터": "캐논슈터",
+        "매지션": "마법사", "아처": "궁수", "로그": "도적",
+    ]
+
+    /// "아크메이지(불,독)" 처럼 그대로 들어오거나, 공백·전각괄호가 섞여도 맞춘다. 1~3차 이름은 4차로 올려서 찾는다.
     static func entry(forJob job: String) -> Entry? {
-        let key = job.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "（", with: "(").replacingOccurrences(of: "）", with: ")")
-        return table[key] ?? table.first { key.hasPrefix($0.key) || $0.key.hasPrefix(key) }?.value
+        var key = job.replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "（", with: "(").replacingOccurrences(of: "）", with: ")")
+        if let a = aliases[key] { key = a }
+        if let e = table[key] { return e }
+        // 1차(전사/마법사/궁수/도적/해적): 계열 페이지 전체
+        switch key {
+        case "전사": return Entry(slugs: ["warrior"], wiki: "Warrior")
+        case "마법사": return Entry(slugs: ["magician"], wiki: "Magician")
+        case "궁수": return Entry(slugs: ["archer"], wiki: "Bowman")
+        case "도적": return Entry(slugs: ["thief"], wiki: "Thief")
+        case "해적": return Entry(slugs: ["pirate"], wiki: "Pirate")
+        default: break
+        }
+        return table.first { key.hasPrefix($0.key) || $0.key.hasPrefix(key) }?.value
     }
 
     /// 직업의 스킬(공용 + 해당 경로)만 가져온다.
+    /// 5차 공용 페이지(*-5th-job)는 직업 구분이 없어서, 위키 직업 스킬 목록(SkillNames.known)에 있는 이름만 남긴다.
     static func skills(forJob job: String) async throws -> [EffectImporter.Skill] {
         guard let e = entry(forJob: job) else { throw PetError("'\(job)' 직업 페이지를 모릅니다") }
-        let all = try await EffectImporter.listSkills(pages: e.pages)
-        return EffectImporter.filter(all, path: e.path, pathIndex: e.pathIndex)
+        var out: [EffectImporter.Skill] = []
+        var seen = Set<String>()
+        for page in e.pages {
+            let isCommon = page.path.contains("5th-job")
+            var list = try await EffectImporter.listSkills(pages: [page])
+            list = EffectImporter.filter(list, path: e.path, pathIndex: e.pathIndex)
+            if isCommon, SkillNames.hasKnownList {
+                list = list.filter { SkillNames.isKnownSkill($0.split.skill) }
+            }
+            for s in list where seen.insert(s.name).inserted { out.append(s) }
+        }
+        return out
     }
 }

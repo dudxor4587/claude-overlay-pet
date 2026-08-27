@@ -7,14 +7,29 @@ import ImageIO
 ///   아이콘이 거의 같고(리비전 차 허용) 2등과 확실히 구분될 때만 짝을 지으므로 틀린 이름이 붙지 않는다. 못 맞춘 스킬은 영문 그대로.
 enum SkillNames {
     private(set) static var current: [String: String] = [:]   // normalized en → ko
+    private(set) static var known = Set<String>()               // 위키에 있는 영문 스킬명 전부 (normalized, 꼬리 제거)
+
+    static var hasKnownList: Bool { !known.isEmpty }
+
+    static func isKnownSkill(_ english: String) -> Bool {
+        let k = normalize(english)
+        return known.contains(k) || (k.hasPrefix("hexa ") && known.contains(String(k.dropFirst(5))))
+    }
 
     static func fileURL(petId: String) -> URL { Paths.petDirectory(petId).appendingPathComponent("skill-names.json") }
 
     static func load(petId: String?) {
-        current = [:]
+        current = [:]; known = []
         guard let petId, let data = try? Data(contentsOf: fileURL(petId: petId)),
               let map = try? JSONDecoder().decode([String: String].self, from: data) else { return }
-        for (en, ko) in map { current[normalize(en)] = ko }
+        for (en, ko) in map {
+            // 위키 이름의 "(Demon Avenger)" 같은 구분 꼬리를 뗀 키로도 찾을 수 있게
+            let bare = normalize(en.replacingOccurrences(of: #"\s*\([^)]*\)"#, with: "", options: .regularExpression))
+            known.insert(normalize(en)); known.insert(bare)
+            guard !ko.isEmpty else { continue }   // 빈 값 = 위키엔 있지만 한글을 못 맞춘 스킬
+            current[normalize(en)] = ko
+            if current[bare] == nil { current[bare] = ko }
+        }
     }
 
     static func korean(_ english: String) -> String? {
@@ -97,18 +112,23 @@ enum SkillNames {
             if wseen.insert(n).inserted { wiki.append((n, u)) }
         }
 
-        // 3. 아이콘 매칭 (완전 일치만)
+        // 3. 매칭: ① 아이콘이 거의 같으면 확정 ② 아니면 한글 발음(로마자) ↔ 영문 유사도 ③ 둘 다 애매하면 아이콘 근사 + 발음 근사
+        //    (데몬어벤져처럼 KMS 아이콘이 개편돼 위키와 다른 직업은 ②③으로 잡는다)
         var map: [String: String] = [:]
         for (i, w) in wiki.enumerated() {
             if i % 10 == 0 { progress("스킬 이름 맞추는 중 \(i)/\(wiki.count)") }
-            guard let px = try? await iconPixels(w.url) else { continue }
-            // 같은 스킬도 리비전에 따라 몇 픽셀 다를 수 있다(평균 차 ~5). 다른 스킬은 보통 30 이상.
-            // 가장 가까운 것이 충분히 가깝고 2등과 확실히 벌어질 때만 짝을 짓는다.
-            let ranked = kr.map { ($0.name, meanDiff($0.px, px)) }.sorted { $0.1 < $1.1 }
-            if let best = ranked.first, best.1 < 12, ranked.count < 2 || ranked[1].1 - best.1 > 10 { map[w.name] = best.0 }
+            let bareName = w.name.replacingOccurrences(of: #"\s*\([^)]*\)"#, with: "", options: .regularExpression)
+            let px = try? await iconPixels(w.url)
+            let byIcon = px.map { p in kr.map { ($0.name, meanDiff($0.px, p)) }.sorted { $0.1 < $1.1 } } ?? []
+            let byName = kr.map { ($0.name, Romanizer.similarity(korean: $0.name, english: bareName)) }.sorted { $0.1 > $1.1 }
+            if let b = byIcon.first, b.1 < 12, byIcon.count < 2 || byIcon[1].1 - b.1 > 10 { map[w.name] = b.0; continue }
+            if let n = byName.first, n.1 >= 0.7, byName.count < 2 || n.1 - byName[1].1 >= 0.08 { map[w.name] = n.0; continue }
+            if let b = byIcon.first, b.1 < 30, let n = byName.first(where: { $0.0 == b.0 }), n.1 >= 0.5 { map[w.name] = b.0 }
         }
+        var full = map
+        for w in wiki where full[w.name] == nil { full[w.name] = "" }
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try enc.encode(map).write(to: fileURL(petId: petId))
+        try enc.encode(full).write(to: fileURL(petId: petId))
         load(petId: petId)
         return (map.count, wiki.count)
     }
@@ -129,5 +149,45 @@ enum SkillNames {
     private static func meanDiff(_ a: [UInt8], _ b: [UInt8]) -> Double {
         var s = 0; for i in 0..<a.count { s += abs(Int(a[i]) - Int(b[i])) }
         return Double(s) / Double(a.count)
+    }
+}
+
+/// 한글 스킬명은 대부분 영문 음차(익시드 데몬 스트라이크 ≈ Exceed Demon Strike)라 로마자로 풀어 비교한다.
+enum Romanizer {
+    static let initials = ["g","kk","n","d","tt","r","m","b","pp","s","ss","","j","jj","ch","k","t","p","h"]
+    static let vowels = ["a","ae","ya","yae","eo","e","yeo","ye","o","wa","wae","oe","yo","u","wo","we","wi","yu","eu","ui","i"]
+    static let finals = ["","k","k","k","n","n","n","t","l","k","m","l","l","l","p","l","m","p","p","t","t","ng","t","t","k","t","p","t"]
+
+    static func roman(_ s: String) -> String {
+        var out = ""
+        for u in s.unicodeScalars {
+            let v = Int(u.value)
+            if (0xAC00...0xD7A3).contains(v) {
+                let o = v - 0xAC00
+                out += initials[o / 588] + vowels[(o % 588) / 28] + finals[o % 28]
+            } else if u.properties.isAlphabetic || (48...57).contains(v) { out += String(u).lowercased() }
+        }
+        return out
+    }
+
+    /// 철자 차이를 뭉갠다 (c→k, l→r, 이중모음 축약 …)
+    static func simplify(_ s: String) -> String {
+        var t = s.lowercased().filter { $0.isLetter }
+        for (a, b) in [("ph","f"),("ck","k"),("c","k"),("x","ks"),("q","k"),("w","u"),("y","i"),("ee","i"),("oo","u"),("th","t"),("v","b"),("z","j"),("l","r"),("eu",""),("h","")] {
+            t = t.replacingOccurrences(of: a, with: b)
+        }
+        var out = ""; var last: Character?
+        for c in t where c != last { out.append(c); last = c }
+        return out
+    }
+
+    static func similarity(korean: String, english: String) -> Double {
+        let a = Array(simplify(roman(korean))), b = Array(simplify(english))
+        guard !a.isEmpty, !b.isEmpty else { return 0 }
+        var dp = [[Int]](repeating: [Int](repeating: 0, count: b.count + 1), count: a.count + 1)
+        for i in 0..<a.count { for j in 0..<b.count {
+            dp[i + 1][j + 1] = a[i] == b[j] ? dp[i][j] + 1 : max(dp[i][j + 1], dp[i + 1][j])
+        } }
+        return 2 * Double(dp[a.count][b.count]) / Double(a.count + b.count)
     }
 }

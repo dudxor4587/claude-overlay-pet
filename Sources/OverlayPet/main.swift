@@ -75,10 +75,10 @@ enum Main {
             let sub = Array(args.dropFirst())
             switch sub.first {
             case nil, "list":
-                let list = Effect.installed(), cfg = Config.load()
+                let list = Effect.installed(), b = PetBindings.load(Config.load().activePet)
                 if list.isEmpty { print("설치된 이펙트 없음. effect fetch <mapleeditors 페이지 URL> 로 가져오세요.") }
                 for e in list {
-                    let states = cfg.effects.filter { $0.value == e }.map(\.key).sorted().joined(separator: ",")
+                    let states = b.effects.filter { $0.value.split(separator: ",").contains(Substring(e)) }.map(\.key).sorted().joined(separator: ",")
                     print(states.isEmpty ? "  \(e)" : "  \(e)  ← \(states)")
                 }
             case "fetch":
@@ -88,6 +88,7 @@ enum Main {
                     switch a {
                     case "--skill": skill = it.next()
                     case "--state": state = it.next()
+                    case "--pet": Paths.overridePet = it.next()   // 활성 펫 대신 이 펫 기준
                     case "--all": all = true
                     case "--tiers": tiers = it.next().map(EffectImporter.parseTiers)
                     default: url = URL(string: a)
@@ -95,10 +96,10 @@ enum Main {
                 }
                 // URL 이 없으면 활성 펫의 직업(경로) 스킬
                 var jobName: String?
-                SkillNames.load(petId: Config.load().activePet)
+                let petId = Paths.overridePet ?? Config.load().activePet
+                SkillNames.load(petId: petId)
                 if url == nil {
-                    let cfg = Config.load()
-                    guard let id = cfg.activePet, let m = try? PetManifest.load(petId: id), let job = m.jobName else {
+                    guard let id = petId, let m = try? PetManifest.load(petId: id), let job = m.jobName else {
                         fail("활성 펫에 직업 정보가 없습니다. effect fetch <페이지URL> 로 지정하세요.")
                     }
                     jobName = job
@@ -136,16 +137,24 @@ enum Main {
                 case .success(let name?):
                     print("→ \(Paths.effectDirectory(name).path)")
                     if let state {
-                        var cfg = Config.load(); cfg.effects[state] = name
-                        attempt { try cfg.save() }
+                        let pet = Config.load().activePet
+                        var b = PetBindings.load(pet); b.effects[state] = name
+                        attempt { try b.save(pet) }
                         print("\(state) → \(name)")
                     }
                 case .success(nil): break
                 case .failure(let e): fail(e.localizedDescription)
                 }
+            case "split":
+                // 디버그: 파일명 → (스킬, 변형)
+                SkillNames.load(petId: Paths.overridePet ?? Config.load().activePet)
+                for raw in sub.dropFirst() {
+                    let sk = EffectImporter.Skill(name: raw, frames: [], tier: "", tierOrder: 0, path: nil, pathIndex: 0)
+                    print(raw, "→", sk.split, "| known:", SkillNames.isKnownSkill(sk.split.skill), "| display:", sk.displayName)
+                }
             case "names":
-                // 활성 펫의 한글 스킬명 표 (다시) 만들기
-                guard let id = Config.load().activePet else { fail("활성 펫이 없습니다") }
+                // 한글 스킬명 표 (다시) 만들기: effect names [petId]
+                guard let id = sub.count >= 2 ? sub[1] : Config.load().activePet else { fail("활성 펫이 없습니다") }
                 guard let key = APIKey.resolve() else { fail("NEXON_API_KEY 필요 (.env)") }
                 let sem = DispatchSemaphore(value: 0)
                 var result: Result<(matched: Int, total: Int), Error>!
@@ -160,16 +169,17 @@ enum Main {
                 }
             case "set":
                 guard sub.count >= 3 else { fail("usage: effect set <state> <name[,name…]|none>") }
-                var cfg = Config.load()
-                if sub[2] == "none" { cfg.effects[sub[1]] = nil }
+                let pet = Config.load().activePet
+                var b = PetBindings.load(pet)
+                if sub[2] == "none" { b.effects[sub[1]] = nil }
                 else {
-                    // "a,b,c" 로 여러 변형을 겹쳐 재생
+                    // "a,b,c" 로 여러 조각을 순서 재생
                     let names = sub[2].split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
                     let installed = Effect.installed()
                     for n in names where !installed.contains(n) { fail("설치되지 않은 이펙트: \(n)") }
-                    cfg.effects[sub[1]] = names.joined(separator: ",")
+                    b.effects[sub[1]] = names.joined(separator: ",")
                 }
-                attempt { try cfg.save() }
+                attempt { try b.save(pet) }
                 print("\(sub[1]) → \(sub[2])")
             default: fail("usage: effect list | fetch [URL] [--tiers 4,5,hyper | --skill NAME] [--state S] | names | set <state> <name|none>")
             }

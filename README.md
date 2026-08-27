@@ -40,6 +40,7 @@ OverlayPet state error "테스트"        # 말풍선/애니메이션 확인
 | UserPromptSubmit | prompt | 대기 |
 | PreToolUse Bash | bash | 공격 |
 | PreToolUse Edit·Write | edit | 걷기 |
+| PostToolUse | think | 대기 (도구 끝나면 복귀) |
 | Notification | notify | 손 흔들기 |
 | PostToolUseFailure | error | 유령 |
 | SessionEnd | end | 엎드리기 |
@@ -50,9 +51,9 @@ OverlayPet state error "테스트"        # 말풍선/애니메이션 확인
 
 캐릭터를 가져오면 그 직업(전직 경로)의 스킬 목록을 [mapleeditors.com](https://mapleeditors.com/skills/)에서 읽어 와 **받을 스킬을 체크**합니다 — 검색 가능, 차수 줄을 누르면 그 차수 전체 토글. 스킬을 고르면 그 스킬의 변형(Effect·Hit·Ball…)을 전부 받고, 상태에 붙이면 조각이 게임 순서대로 재생됩니다 — `Prepare/Charge → Keydown/Loop → End`는 차례로, `Effect`는 본 동작과 동시에, `Tile`은 앞으로 퍼지며, `Hit/Mob`은 살짝 늦게 앞쪽에. 소환수 조각은 제외. 따로 고를 건 없고, 조각 하나만 쓰고 싶을 때만 CLI `effect set`으로 지정합니다. 큰 이펙트는 512px로 줄여 저장하고 화면에서는 창 크기에 맞춰 축소됩니다. 나중에 우클릭 → **직업 스킬 이펙트 받기…** 로 더 받을 수 있습니다.
 
-받은 스킬은 **상태별 이펙트** 메뉴에서 `상태 → 차수 → 스킬`로 고르고, **이펙트 재생**으로 바로 확인합니다. **갤러리 (주기 재생)** 에서 체크한 스킬들은 정한 간격(기본 30초)마다 돌아가며 재생됩니다 (다른 이펙트가 재생 중이면 건너뜀). 펫에 마우스를 올리면 손을 흔듭니다.
+받은 스킬은 **상태별 이펙트** 메뉴에서 `상태 → 차수 → 스킬`로 고르고, **이펙트 재생**으로 바로 확인합니다. **갤러리 (주기 재생)** 에서 체크한 스킬들은 정한 간격(기본 30초)마다 돌아가며 재생됩니다 (다른 이펙트가 재생 중이면 건너뜀). 펫에 마우스를 올리면 손을 흔듭니다. **이펙트 투명도**(100~25%)도 메뉴에서 조절합니다.
 
-스킬 이름은 한글로 표시됩니다. 캐릭터를 가져올 때 넥슨 API로 **본인 캐릭터의 스킬(한글 이름·아이콘)** 을 읽고, [maplestorywiki.net](https://maplestorywiki.net) 직업 페이지의 스킬 아이콘(영문 이름)과 픽셀 단위로 같은 것끼리 짝지어 `pets/<id>/skill-names.json`에 둡니다. 아이콘이 거의 같고 다른 후보와 확실히 구분될 때만 매칭하므로 틀린 이름은 붙지 않고, 못 맞춘 스킬(KMS/GMS 아이콘이 다른 것, 아직 안 배운 스킬)은 영문으로 남습니다. `OverlayPet effect names`로 다시 만들 수 있습니다.
+스킬 이름은 한글로 표시됩니다. 캐릭터를 가져올 때 넥슨 API로 **본인 캐릭터의 스킬(한글 이름·아이콘)** 을 읽고, [maplestorywiki.net](https://maplestorywiki.net) 직업 페이지의 스킬 아이콘(영문 이름)과 픽셀 단위로 같은 것끼리 짝지어 `pets/<id>/skill-names.json`에 둡니다. 아이콘이 거의 같으면 확정하고, 아이콘이 다른 직업(데몬어벤져처럼 KMS 아이콘이 개편된 경우)은 한글 발음을 로마자로 풀어 영문과 비교해 잡습니다. 그래도 못 맞춘 스킬(개명된 데다 아이콘도 다른 것, 아직 안 배운 스킬)은 영문으로 남습니다. `OverlayPet effect names`로 다시 만들 수 있습니다.
 
 ```sh
 OverlayPet effect fetch                         # 활성 펫 직업 스킬 목록 (차수별)
@@ -62,7 +63,7 @@ OverlayPet effect set bash boomerang-stab-effect
 OverlayPet effect set done none
 ```
 
-직접 넣을 수도 있습니다: `~/.claude/pet/effects/<name>/effect.json` + `sheet.png`
+이펙트·상태 연결·갤러리는 **캐릭터(펫)별**로 `~/.claude/pet/pets/<id>/effects/`, `bindings.json`에 저장되어 펫을 바꾸면 그 캐릭터의 스킬만 보입니다. 직접 넣을 수도 있습니다: `pets/<id>/effects/<name>/effect.json` + `sheet.png`
 
 ```json
 {"frameWidth":57,"frameHeight":118,"frames":13,"columns":4,"fps":12,"loop":false,"anchor":"bottom","scale":1.5}

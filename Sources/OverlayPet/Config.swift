@@ -18,6 +18,7 @@ struct Config: Codable {
     /// 갤러리: 주기적으로 돌아가며 재생할 스킬들 (effects 값과 같은 "a,b,c" 형식)
     var gallery: [String]?
     var galleryInterval: Double?   // 초, 기본 30
+    var effectOpacity: Double?     // 0~1, 기본 1
     var canvasVersion: Int?   // 키가 없으면 디코딩이 실패하므로 Optional (nil = 1)
 
     struct Position: Codable { var x: Double; var y: Double }
@@ -35,6 +36,43 @@ struct Config: Codable {
         try Paths.atomicWrite(try enc.encode(self), to: Paths.config)
         // API 키가 들어가므로 본인만 읽게.
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Paths.config.path)
+    }
+}
+
+/// pets/<id>/bindings.json — 상태별 이펙트와 갤러리는 캐릭터마다 다르다.
+struct PetBindings: Codable {
+    var effects: [String: String] = [:]   // 상태 → "a,b,c"
+    var gallery: [String] = []
+
+    static func url(_ petId: String) -> URL { Paths.petDirectory(petId).appendingPathComponent("bindings.json") }
+
+    static func load(_ petId: String?) -> PetBindings {
+        guard let petId, let data = try? Data(contentsOf: url(petId)),
+              let b = try? JSONDecoder().decode(PetBindings.self, from: data) else { return PetBindings() }
+        return b
+    }
+
+    func save(_ petId: String?) throws {
+        guard let petId else { return }
+        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try Paths.atomicWrite(try enc.encode(self), to: Self.url(petId))
+    }
+
+    /// 예전 전역 구조(~/.claude/pet/effects + config.effects) → 활성 펫 폴더로 한 번 옮긴다.
+    static func migrateIfNeeded(config: inout Config) {
+        guard let id = config.activePet else { return }
+        let fm = FileManager.default
+        let old = Paths.root.appendingPathComponent("effects", isDirectory: true)
+        let new = Paths.effectsDirectory(id)
+        if fm.fileExists(atPath: old.path), !fm.fileExists(atPath: new.path) {
+            try? fm.moveItem(at: old, to: new)
+        }
+        if !fm.fileExists(atPath: url(id).path), !(config.effects.isEmpty && (config.gallery ?? []).isEmpty) {
+            var b = PetBindings(); b.effects = config.effects; b.gallery = config.gallery ?? []
+            try? b.save(id)
+            config.effects = [:]; config.gallery = nil
+            try? config.save()
+        }
     }
 }
 
