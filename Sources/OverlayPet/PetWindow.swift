@@ -44,8 +44,14 @@ final class PetView: NSView {
     var onMoved: ((NSPoint) -> Void)?
     var onRightClick: ((NSEvent) -> Void)?
 
-    // 레이아웃: 아래 스프라이트, 위 말풍선
+    // 레이아웃: 창을 스프라이트보다 넉넉히 잡아 큰 이펙트가 잘리지 않게 한다. 투명 영역은 클릭 통과.
     static let bubbleHeight: CGFloat = 110   // 세션 4줄까지
+    static let canvasWidth: CGFloat = 520
+    static let canvasTopPad: CGFloat = 220   // 스프라이트 위 이펙트 여유
+    static let canvasSidePad: CGFloat = 0
+    var canvasSize: CGSize {
+        CGSize(width: max(spriteSize.width, Self.canvasWidth), height: spriteSize.height + Self.bubbleHeight + Self.canvasTopPad)
+    }
     var spriteSize: CGSize {
         guard let s = sheet else { return CGSize(width: 192 * scale, height: 208 * scale) }
         return CGSize(width: CGFloat(s.frameWidth) * scale, height: CGFloat(s.frameHeight) * scale)
@@ -95,20 +101,27 @@ final class PetView: NSView {
     /// 머리 부분(꼭대기부터 40px)의 가로 중심. 무기·이펙트로 전체 폭이 치우쳐도 머리 위에 말풍선이 오게.
     private var headCenterX: CGFloat = 96
 
+    /// 발 위치(셀 안 y)와 몸통 가로 중심 — 이펙트 정렬용
+    private var footY: CGFloat = 188
+    private var bodyCenterX: CGFloat = 96
+
     private func measureHeadInset() -> CGFloat {
         guard let s = sheet, let a = alpha else { return 0 }
         let w = s.image.width
-        var top: Int?
-        var sumX = 0, count = 0
+        var top: Int?, bottom = 0
+        var sumX = 0, count = 0, allX = 0, allCount = 0
         for y in 0..<s.frameHeight {
-            if let t = top, y - t > 40 { break }
             let rowBase = y * w
             for x in 0..<s.frameWidth where x < w && a[rowBase + x] > 8 {   // 0행 0열 프레임만
                 if top == nil { top = y }
-                sumX += x; count += 1
+                if y - (top ?? y) <= 40 { sumX += x; count += 1 }
+                allX += x; allCount += 1
+                bottom = y
             }
         }
         headCenterX = count > 0 ? CGFloat(sumX) / CGFloat(count) : CGFloat(s.frameWidth) / 2
+        bodyCenterX = allCount > 0 ? CGFloat(allX) / CGFloat(allCount) : CGFloat(s.frameWidth) / 2
+        footY = CGFloat(bottom + 1)
         return CGFloat(top ?? 0)
     }
 
@@ -190,10 +203,14 @@ final class PetView: NSView {
     private func layoutEffect() {
         guard let e = effect else { return }
         let m = e.manifest
-        let w = CGFloat(m.frameWidth) * scale * CGFloat(m.scale), h = CGFloat(m.frameHeight) * scale * CGFloat(m.scale)
+        var w = CGFloat(m.frameWidth) * scale * CGFloat(m.scale), h = CGFloat(m.frameHeight) * scale * CGFloat(m.scale)
+        // 창보다 크면 창에 맞춰 축소 (6차 오리진 같은 대형 이펙트)
+        let fit = min(1, bounds.width / w, (bounds.height - 8) / h)
+        w *= fit; h *= fit
         let sp = spriteLayer.frame
-        let cx = sp.midX + CGFloat(m.offsetX) * scale
-        let y: CGFloat = m.anchor == "bottom" ? sp.maxY - h : sp.midY - h / 2
+        let cx = sp.minX + bodyCenterX * scale + CGFloat(m.offsetX) * scale
+        let feet = sp.minY + footY * scale
+        let y: CGFloat = m.anchor == "bottom" ? feet - h : (sp.minY + headInset * scale + feet) / 2 - h / 2
         effectLayer.frame = CGRect(x: cx - w / 2, y: y - CGFloat(m.offsetY) * scale, width: w, height: h)
     }
 

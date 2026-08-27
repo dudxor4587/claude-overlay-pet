@@ -20,6 +20,33 @@ struct EffectManifest: Codable {
     var offsetY: Double = 0
     var scale: Double = 1
     var sheetPath: String = "sheet.png"
+    // 메뉴 표시용 메타 (가져오기 시 기록)
+    var skill: String?
+    var koreanName: String?
+    var variant: String?
+    var tier: String?
+    var tierOrder: Int?
+    var path: String?
+}
+
+/// 설치된 이펙트의 매니페스트만 (시트는 안 읽음) — 메뉴 구성용
+struct EffectInfo {
+    let name: String
+    let manifest: EffectManifest
+    var tier: String { manifest.tier ?? "기타" }
+    var tierOrder: Int { manifest.tierOrder ?? 99 }
+    var skill: String { manifest.skill ?? name }
+    /// 메뉴 표시용: 한글 이름이 있으면 한글, 없으면 영문
+    var skillTitle: String { manifest.koreanName ?? SkillNames.korean(skill) ?? skill }
+    var variant: String { manifest.variant ?? "" }
+
+    static func all() -> [EffectInfo] {
+        Effect.installed().compactMap { name in
+            guard let data = try? Data(contentsOf: Paths.effectDirectory(name).appendingPathComponent("effect.json")),
+                  let m = try? JSONDecoder().decode(EffectManifest.self, from: data) else { return nil }
+            return EffectInfo(name: name, manifest: m)
+        }
+    }
 }
 
 struct Effect {

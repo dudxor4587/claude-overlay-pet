@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastStateTS: Double = 0
     private var lastFileMTime: Date?
     private var fetching = false
+    private var activeManifest: PetManifest?
     private var focusSession: String?
     private static let passThrough: Set<String> = ["done", "error", "notify"]
 
@@ -19,7 +20,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         view = PetView(frame: .zero)
         view.configure(config: config)
-        let size = CGSize(width: max(view.spriteSize.width, 260), height: view.spriteSize.height + PetView.bubbleHeight)
+        let size = view.canvasSize
+        if (config.canvasVersion ?? 1) < 2, var p = config.position {   // 캔버스가 넓어진 만큼 위치 보정
+            p.x -= (PetView.canvasWidth - 260) / 2
+            config.position = p; config.canvasVersion = 2; try? config.save()
+        }
         let origin = config.position.map { NSPoint(x: $0.x, y: $0.y) } ?? defaultOrigin(size)
         window = PetWindow(contentRect: NSRect(origin: origin, size: size))
         window.contentView = view
@@ -55,7 +60,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func loadActivePet() {
         guard let id = config.activePet else { view.setSheet(nil); return }
         do {
-            let (_, sheet) = try SpriteSheet.load(petId: id)
+            let (manifest, sheet) = try SpriteSheet.load(petId: id)
+            activeManifest = manifest
+            SkillNames.load(petId: id)
             view.setSheet(sheet)
             resizeWindow()
         } catch {
@@ -65,14 +72,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func resizeWindow() {
-        let size = CGSize(width: max(view.spriteSize.width, 260), height: view.spriteSize.height + PetView.bubbleHeight)
+        let size = view.canvasSize
         var f = window.frame; f.size = size
         window.setFrame(f, display: true)
     }
 
     // MARK: 상태 파일 감시
 
+    private var lastConfigMTime: Date?
+
     private func poll() {
+        // CLI(effect set 등)로 config.json 이 바뀌면 그대로 반영
+        if let cm = (try? FileManager.default.attributesOfItem(atPath: Paths.config.path))?[.modificationDate] as? Date, cm != lastConfigMTime {
+            if lastConfigMTime != nil { config = Config.load(); view.configure(config: config) }
+            lastConfigMTime = cm
+        }
         let attrs = try? FileManager.default.attributesOfItem(atPath: Paths.state.path)
         let mtime = attrs?[.modificationDate] as? Date
         if mtime != lastFileMTime {
@@ -118,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if isNew, let name = config.effects[s.state], let e = try? Effect.load(name: name) { view.playEffect(e) }
         } else if isNew, Self.passThrough.contains(s.state) {
             view.playOnce(state: s.state)   // 다른 세션의 완료·실패·알림은 1회만
+            if let name = config.effects[s.state], let e = try? Effect.load(name: name) { view.playEffect(e) }
         }
         refreshStatus()
     }
@@ -151,6 +166,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let item = NSMenuItem(title: "펫 선택", action: nil, keyEquivalent: "")
             item.submenu = sub
             menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "직업 스킬 이펙트 받기…", action: #selector(fetchEffect), keyEquivalent: "").target = self
+        let infos = EffectInfo.all()
+        if !infos.isEmpty {
+            // 상태 → 차수 → 스킬 → (변형) 로 묶는다
+            let assign = NSMenu()
+            for state in Self.effectStates {
+                let sub = NSMenu()
+                let none = NSMenuItem(title: "없음", action: #selector(assignEffect(_:)), keyEquivalent: "")
+                none.target = self; none.representedObject = [state, ""]
+                none.state = config.effects[state] == nil ? .on : .off
+                sub.addItem(none)
+                sub.addItem(.separator())
+                for item in tierMenus(infos, action: #selector(assignEffect(_:)), tag: state) { sub.addItem(item) }
+                let item = NSMenuItem(title: "\(state) — \(AnimationMap.bubbleText[state] ?? state)", action: nil, keyEquivalent: "")
+                if let cur = config.effects[state], let info = infos.first(where: { $0.name == cur }) {
+                    item.title += "   [\(info.skillTitle)\(info.variant.isEmpty ? "" : " · " + info.variant)]"
+                }
+                item.submenu = sub
+                assign.addItem(item)
+            }
+            let assignItem = NSMenuItem(title: "상태별 이펙트", action: nil, keyEquivalent: "")
+            assignItem.submenu = assign
+            menu.addItem(assignItem)
+
+            let play = NSMenu()
+            for item in tierMenus(infos, action: #selector(testEffect(_:)), tag: nil) { play.addItem(item) }
+            let playItem = NSMenuItem(title: "이펙트 재생", action: nil, keyEquivalent: "")
+            playItem.submenu = play
+            menu.addItem(playItem)
         }
 
         menu.addItem(.separator())
@@ -207,6 +254,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openFolder() { NSWorkspace.shared.open(Paths.root) }
 
+    // MARK: 이펙트
+
+    /// 차수 → 스킬 → 변형 3단 메뉴. tag 가 있으면 representedObject = [tag, name], 없으면 name.
+    private func tierMenus(_ infos: [EffectInfo], action: Selector, tag: String?) -> [NSMenuItem] {
+        let byTier = Dictionary(grouping: infos, by: { $0.tier })
+        let assigned = config.effects
+        return byTier.keys.sorted { (byTier[$0]!.first!.tierOrder, $0) < (byTier[$1]!.first!.tierOrder, $1) }.map { tier in
+            let tierMenu = NSMenu()
+            let bySkill = Dictionary(grouping: byTier[tier]!, by: { $0.skillTitle })
+            for skill in bySkill.keys.sorted() {
+                let variants = bySkill[skill]!.sorted { $0.variant < $1.variant }
+                func leaf(_ info: EffectInfo, title: String) -> NSMenuItem {
+                    let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                    it.target = self
+                    it.representedObject = tag.map { [$0, info.name] as Any } ?? info.name
+                    if let tag, assigned[tag] == info.name { it.state = .on }
+                    return it
+                }
+                if variants.count == 1 {
+                    let v = variants[0]
+                    tierMenu.addItem(leaf(v, title: v.variant.isEmpty ? skill : "\(skill) · \(v.variant)"))
+                } else {
+                    let skillMenu = NSMenu()
+                    for v in variants { skillMenu.addItem(leaf(v, title: v.variant.isEmpty ? "기본" : v.variant)) }
+                    let it = NSMenuItem(title: skill, action: nil, keyEquivalent: "")
+                    if let tag, variants.contains(where: { assigned[tag] == $0.name }) { it.state = .on }
+                    it.submenu = skillMenu
+                    tierMenu.addItem(it)
+                }
+            }
+            let it = NSMenuItem(title: "\(tier) (\(bySkill.count))", action: nil, keyEquivalent: "")
+            it.submenu = tierMenu
+            return it
+        }
+    }
+
+    static let effectStates = ["start", "prompt", "bash", "edit", "notify", "error", "done", "end"]
+
+    @objc private func assignEffect(_ sender: NSMenuItem) {
+        guard let pair = sender.representedObject as? [String], pair.count == 2 else { return }
+        config.effects[pair[0]] = pair[1].isEmpty ? nil : pair[1]
+        try? config.save()
+        if !pair[1].isEmpty, let e = try? Effect.load(name: pair[1]) { view.playEffect(e) }
+    }
+
+    @objc private func testEffect(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String, let e = try? Effect.load(name: name) else { return }
+        view.playEffect(e)
+    }
+
+    /// 활성 펫의 직업 스킬 이펙트를 (다시) 받는다. 캐릭터 가져오기 때 자동으로도 호출.
+    @objc private func fetchEffect() {
+        guard !fetching, let job = activeManifest?.jobName else { view.say("직업 정보가 없는 펫이야", seconds: 4); return }
+        fetching = true
+        Task { [weak self] in
+            defer { self?.fetching = false }
+            await self?.importJobSkills(job)
+        }
+    }
+
+    /// 한글 스킬명 표 만들기 (본인 캐릭터 스킬 ↔ 위키 아이콘)
+    private func resolveSkillNames(force: Bool = false) async {
+        guard let id = config.activePet, force || !SkillNames.hasTable(petId: id), let key = APIKey.resolve() else { return }
+        do {
+            let r = try await SkillNames.resolve(petId: id, apiKey: key) { [weak self] msg in Task { @MainActor in self?.view.say(msg, seconds: 60) } }
+            view.say("한글 스킬명 \(r.matched)/\(r.total) 맞춤", seconds: 3)
+        } catch {
+            view.say("한글 스킬명 실패: \(error.localizedDescription)", seconds: 6)
+        }
+    }
+
+    private func importJobSkills(_ job: String) async {
+        await resolveSkillNames()
+        view.say("\(job) 스킬 목록 불러오는 중…", seconds: 30)
+        let skills: [EffectImporter.Skill]
+        do {
+            skills = try await JobPages.skills(forJob: job)
+        } catch {
+            view.say("스킬 가져오기 실패: \(error.localizedDescription)", seconds: 8); return
+        }
+        guard !skills.isEmpty else { view.say("\(job) 스킬을 찾지 못했어", seconds: 5); return }
+        view.say("\(skills.count)개 스킬 — 받을 스킬을 골라 줘", seconds: 30)
+        guard let picked = SkillPicker(skills: EffectImporter.primaryVariants(skills)).run(title: "\(job) 스킬 이펙트"), !picked.isEmpty else { view.say("취소", seconds: 2); return }
+        view.say("\(job) 스킬 \(picked.count)개 받는 중…", seconds: 60)
+        let names = await EffectImporter.installAll(picked) { [weak self] msg in Task { @MainActor in self?.view.say(msg, seconds: 60) } }
+        view.say("스킬 이펙트 \(names.count)개 준비 완료 · 우클릭 → 상태별 이펙트", seconds: 8)
+    }
+
+
     // MARK: 캐릭터 가져오기 (앱 내장 fetcher)
 
     @objc private func fetchCharacter() {
@@ -249,6 +385,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.loadActivePet()
                 self?.view.say("\(charName) 등장!", seconds: 4)
                 self?.view.play(state: "start", force: true)
+                if let job = self?.activeManifest?.jobName { await self?.importJobSkills(job) }
             } catch {
                 self?.view.say("실패: \(error.localizedDescription)", seconds: 8)
             }

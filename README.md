@@ -46,13 +46,29 @@ OverlayPet state error "테스트"        # 말풍선/애니메이션 확인
 
 세션이 여러 개면 마지막에 프롬프트를 친 세션을 따라가고, 다른 세션은 error·notify만 보여줍니다. 매핑·배율·fps 등은 `~/.claude/pet/config.json`에서 바꿉니다.
 
-## 이펙트
+## 스킬 이펙트
 
-`~/.claude/pet/effects/<name>/effect.json` + `sheet.png`를 넣고 `config.json`에 `"effects": {"done": "<name>"}`로 연결합니다.
+캐릭터를 가져오면 그 직업(전직 경로)의 스킬 목록을 [mapleeditors.com](https://mapleeditors.com/skills/)에서 읽어 와 **받을 스킬을 체크**합니다 — 검색 가능, 차수 줄을 누르면 그 차수 전체 토글. 나중에 우클릭 → **직업 스킬 이펙트 받기…** 로 더 받을 수 있습니다.
+
+받은 스킬은 **상태별 이펙트** 메뉴에서 `상태 → 차수 → 스킬 → 변형(Effect/Hit…)` 순으로 고르고, **이펙트 재생**으로 바로 확인합니다.
+
+스킬 이름은 한글로 표시됩니다. 캐릭터를 가져올 때 넥슨 API로 **본인 캐릭터의 스킬(한글 이름·아이콘)** 을 읽고, [maplestorywiki.net](https://maplestorywiki.net) 직업 페이지의 스킬 아이콘(영문 이름)과 픽셀 단위로 같은 것끼리 짝지어 `pets/<id>/skill-names.json`에 둡니다. 아이콘이 거의 같고 다른 후보와 확실히 구분될 때만 매칭하므로 틀린 이름은 붙지 않고, 못 맞춘 스킬(KMS/GMS 아이콘이 다른 것, 아직 안 배운 스킬)은 영문으로 남습니다. `OverlayPet effect names`로 다시 만들 수 있습니다.
+
+```sh
+OverlayPet effect fetch                         # 활성 펫 직업 스킬 목록 (차수별)
+OverlayPet effect fetch --tiers 4,hyper,5       # 그 차수만 받기
+OverlayPet effect fetch https://mapleeditors.com/warrior/ --skill Raging-Blow-Effect-1 --state done
+OverlayPet effect set bash boomerang-stab-effect
+OverlayPet effect set done none
+```
+
+직접 넣을 수도 있습니다: `~/.claude/pet/effects/<name>/effect.json` + `sheet.png`
 
 ```json
-{"frameWidth":200,"frameHeight":200,"frames":12,"columns":6,"fps":12,"loop":false}
+{"frameWidth":57,"frameHeight":118,"frames":13,"columns":4,"fps":12,"loop":false,"anchor":"bottom","scale":1.5}
 ```
+
+이펙트 이미지 역시 사용자가 런타임에 받아오며 저장소에는 포함되지 않습니다.
 
 ## 라이선스
 

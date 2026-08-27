@@ -15,6 +15,19 @@ struct PetManifest: Codable {
     var columns: Int?
     var rows: Int?
     var frameCounts: [Int]?
+    /// 넥슨 직업명 (이펙트 페이지 자동 선택용). 없으면 description "월드 · 직업 · Lv" 에서 추출.
+    var job: String?
+    var ocid: String?
+
+    static func load(petId: String) throws -> PetManifest {
+        try JSONDecoder().decode(PetManifest.self, from: Data(contentsOf: Paths.petDirectory(petId).appendingPathComponent("pet.json")))
+    }
+
+    var jobName: String? {
+        if let job, !job.isEmpty { return job }
+        let parts = description.components(separatedBy: " · ")
+        return parts.count >= 3 ? parts[1] : nil
+    }
 }
 
 struct SpriteSheet {

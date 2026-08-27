@@ -14,6 +14,8 @@ struct Config: Codable {
     var animations: [String: AnimationSpec]?
     /// 상태 → 이펙트 이름 (~/.claude/pet/effects/<name>/)
     var effects: [String: String] = [:]
+    var lastEffectPage: String?
+    var canvasVersion: Int?   // 키가 없으면 디코딩이 실패하므로 Optional (nil = 1)
 
     struct Position: Codable { var x: Double; var y: Double }
 

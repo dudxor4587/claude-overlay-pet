@@ -41,7 +41,7 @@ enum Main {
             }
             let sem = DispatchSemaphore(value: 0)
             var result: Result<String, Error>!
-            Task {
+            Task.detached {
                 do { result = .success(try await SheetBuilder.build(characterName: name, apiKey: apiKey, weapon: weapon) { print($0) }) }
                 catch { result = .failure(error) }
                 sem.signal()
@@ -70,9 +70,107 @@ enum Main {
             var cfg = Config.load(); cfg.activePet = DefaultPet.id
             attempt { try cfg.save() }
             print("기본 펫 생성: \(Paths.petDirectory(DefaultPet.id).path)")
-        case "effects":
-            let list = Effect.installed()
-            print(list.isEmpty ? "설치된 이펙트 없음. \(Paths.effects.path)/<name>/effect.json + sheet.png 를 넣으세요." : list.joined(separator: "\n"))
+        case "effects", "effect":
+            // effect list | effect fetch <페이지URL> [--skill NAME] [--state S] | effect set <state> <name|none>
+            let sub = Array(args.dropFirst())
+            switch sub.first {
+            case nil, "list":
+                let list = Effect.installed(), cfg = Config.load()
+                if list.isEmpty { print("설치된 이펙트 없음. effect fetch <mapleeditors 페이지 URL> 로 가져오세요.") }
+                for e in list {
+                    let states = cfg.effects.filter { $0.value == e }.map(\.key).sorted().joined(separator: ",")
+                    print(states.isEmpty ? "  \(e)" : "  \(e)  ← \(states)")
+                }
+            case "fetch":
+                var url: URL?, skill: String?, state: String?, all = false, tiers: Set<String>?
+                var it = sub.dropFirst().makeIterator()
+                while let a = it.next() {
+                    switch a {
+                    case "--skill": skill = it.next()
+                    case "--state": state = it.next()
+                    case "--all": all = true
+                    case "--tiers": tiers = it.next().map(EffectImporter.parseTiers)
+                    default: url = URL(string: a)
+                    }
+                }
+                // URL 이 없으면 활성 펫의 직업(경로) 스킬
+                var jobName: String?
+                SkillNames.load(petId: Config.load().activePet)
+                if url == nil {
+                    let cfg = Config.load()
+                    guard let id = cfg.activePet, let m = try? PetManifest.load(petId: id), let job = m.jobName else {
+                        fail("활성 펫에 직업 정보가 없습니다. effect fetch <페이지URL> 로 지정하세요.")
+                    }
+                    jobName = job
+                }
+                let sem = DispatchSemaphore(value: 0)
+                var result: Result<String?, Error>!
+                Task.detached {
+                    do {
+                        let skills: [EffectImporter.Skill]
+                        if let url { skills = try await EffectImporter.listSkills(pages: [url]) }
+                        else { skills = try await JobPages.skills(forJob: jobName!) }
+                        if all || tiers != nil {
+                            let primary = EffectImporter.primaryVariants(skills)
+                            let picked = tiers.map { t in primary.filter { t.contains($0.tier) } } ?? primary
+                            let names = await EffectImporter.installAll(picked) { print($0) }
+                            print("\(names.count)개 설치 → \(Paths.effects.path)")
+                            result = .success(nil); sem.signal(); return
+                        }
+                        guard let skill else {
+                            var lastTier = ""
+                            for s in skills.sorted(by: { ($0.tierOrder, $0.displayName) < ($1.tierOrder, $1.displayName) }) {
+                                if s.tier != lastTier { lastTier = s.tier; print("[\(s.tier)]") }
+                                print("  \(s.displayName)  (\(s.frames.count))")
+                            }
+                            result = .success(nil); sem.signal(); return
+                        }
+                        guard let pick = skills.first(where: { $0.name.lowercased() == skill.lowercased() }) else {
+                            throw PetError("스킬을 찾을 수 없음: \(skill). effect fetch <URL> 로 목록 확인")
+                        }
+                        result = .success(try await EffectImporter.install(pick) { print($0) })
+                    } catch { result = .failure(error) }
+                    sem.signal()
+                }
+                sem.wait()
+                switch result! {
+                case .success(let name?):
+                    print("→ \(Paths.effectDirectory(name).path)")
+                    if let state {
+                        var cfg = Config.load(); cfg.effects[state] = name
+                        attempt { try cfg.save() }
+                        print("\(state) → \(name)")
+                    }
+                case .success(nil): break
+                case .failure(let e): fail(e.localizedDescription)
+                }
+            case "names":
+                // 활성 펫의 한글 스킬명 표 (다시) 만들기
+                guard let id = Config.load().activePet else { fail("활성 펫이 없습니다") }
+                guard let key = APIKey.resolve() else { fail("NEXON_API_KEY 필요 (.env)") }
+                let sem = DispatchSemaphore(value: 0)
+                var result: Result<(matched: Int, total: Int), Error>!
+                Task.detached {
+                    do { result = .success(try await SkillNames.resolve(petId: id, apiKey: key) { print($0) }) } catch { result = .failure(error) }
+                    sem.signal()
+                }
+                sem.wait()
+                switch result! {
+                case .success(let r): print("한글 스킬명 \(r.matched)/\(r.total) → \(SkillNames.fileURL(petId: id).path)")
+                case .failure(let e): fail(e.localizedDescription)
+                }
+            case "set":
+                guard sub.count >= 3 else { fail("usage: effect set <state> <name|none>") }
+                var cfg = Config.load()
+                if sub[2] == "none" { cfg.effects[sub[1]] = nil }
+                else {
+                    guard Effect.installed().contains(sub[2]) else { fail("설치되지 않은 이펙트: \(sub[2])") }
+                    cfg.effects[sub[1]] = sub[2]
+                }
+                attempt { try cfg.save() }
+                print("\(sub[1]) → \(sub[2])")
+            default: fail("usage: effect list | fetch [URL] [--tiers 4,5,hyper | --skill NAME] [--state S] | names | set <state> <name|none>")
+            }
         case "state":
             // 디버그: state <name> [message]
             guard args.count >= 2 else { fail("usage: state <name> [message]") }
@@ -86,7 +184,10 @@ enum Main {
               fetch <캐릭터명> [--api-key K] [--weapon]   넥슨 API 로 스프라이트 시트 생성·설치
               pets | use <id>           설치된 펫 목록 / 선택
               hooks install|uninstall|status             Claude Code 훅 설정
-              effects                   설치된 이펙트 목록
+              effect list               설치된 이펙트 목록
+              effect fetch [페이지URL] [--tiers 4,5,hyper | --all | --skill NAME] [--state S]   스킬 이펙트 가져오기 (URL 없으면 활성 펫 직업)
+              effect set <state> <name|none>              상태에 이펙트 연결
+              effect names              활성 펫 스킬 한글 이름 표 만들기 (캐릭터 가져올 때 자동)
               state <name> [msg]        상태 파일 직접 쓰기 (테스트)
 
             데이터: \(Paths.root.path)

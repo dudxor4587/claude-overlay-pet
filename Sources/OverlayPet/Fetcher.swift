@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 // MARK: - 넥슨 Open API
 
 struct NexonCharacter {
+    let ocid: String
     let name: String
     let world: String
     let job: String
@@ -34,6 +35,7 @@ enum NexonClient {
         else { throw PetError("캐릭터 이미지 URL 이 예상과 다릅니다") }
         comps.query = nil; comps.fragment = nil
         return NexonCharacter(
+            ocid: ocid,
             name: basic["character_name"] as? String ?? name,
             world: basic["world_name"] as? String ?? "",
             job: basic["character_class"] as? String ?? "",
@@ -52,7 +54,7 @@ enum NexonClient {
         return c.url!
     }
 
-    private static func getJSON(_ url: URL, apiKey: String) async throws -> [String: Any] {
+    static func getJSON(_ url: URL, apiKey: String) async throws -> [String: Any] {
         var req = URLRequest(url: url)
         req.setValue(apiKey, forHTTPHeaderField: "x-nxopen-api-key")
         let (data, resp) = try await URLSession.shared.data(for: req)
@@ -206,7 +208,7 @@ enum SheetBuilder {
             description: "\(ch.world) · \(ch.job) · Lv.\(ch.level)",
             spriteVersionNumber: 1, spritesheetPath: "spritesheet.png",
             frameWidth: cellW, frameHeight: cellH, columns: columns, rows: rows.count,
-            frameCounts: rows.map(\.frames))
+            frameCounts: rows.map(\.frames), job: ch.job, ocid: ch.ocid)
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(manifest).write(to: dir.appendingPathComponent("pet.json"))
         progress("설치 완료: \(id)")
