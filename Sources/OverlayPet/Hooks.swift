@@ -97,13 +97,30 @@ enum Hooks {
         var message = json["message"] as? String
         if state == "error", let tool = json["tool_name"] as? String { message = "\(tool) 실패" }
         let cwd = (json["cwd"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent }
+        let sid = json["session_id"] as? String
         let file = PetStateFile(
             state: state,
             tool: json["tool_name"] as? String,
             message: message,
             cwd: cwd,
-            sessionId: json["session_id"] as? String,
+            name: sid.flatMap(sessionName),
+            sessionId: sid,
             ts: Date().timeIntervalSince1970)
         try? file.write()
+    }
+
+    /// ~/.claude/sessions/<pid>.json 에서 세션 이름을 찾는다. 자동 생성 이름(nameSource=derived)은 무시.
+    static func sessionName(_ sessionId: String) -> String? {
+        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/sessions")
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return nil }
+        for f in files where f.hasSuffix(".json") {
+            guard let data = try? Data(contentsOf: dir.appendingPathComponent(f)),
+                  let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  j["sessionId"] as? String == sessionId else { continue }
+            if (j["nameSource"] as? String) == "derived" { return nil }
+            if let n = j["name"] as? String, !n.trimmingCharacters(in: .whitespaces).isEmpty { return n }
+            return nil
+        }
+        return nil
     }
 }

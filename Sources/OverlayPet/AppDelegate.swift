@@ -123,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sessions[sid] = nil
             if focusSession == sid { focusSession = nil }
         } else {
-            sessions[sid] = Session(cwd: s.cwd ?? "?", state: s.state, message: s.message, ts: s.ts)
+            sessions[sid] = Session(cwd: s.label, state: s.state, message: s.message, ts: s.ts)
         }
         // 포커스: 마지막으로 프롬프트를 친 세션. 애니메이션은 포커스 세션을 따라간다.
         if s.state == "prompt" || s.state == "start" || focusSession == nil { focusSession = sid }
@@ -250,7 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func testState(_ sender: NSMenuItem) {
         guard let s = sender.representedObject as? String else { return }
-        try? PetStateFile(state: s, tool: nil, message: nil, cwd: nil, sessionId: nil, ts: Date().timeIntervalSince1970).write()
+        try? PetStateFile(state: s, tool: nil, message: nil, cwd: nil, name: nil, sessionId: nil, ts: Date().timeIntervalSince1970).write()
     }
 
     @objc private func openFolder() { NSWorkspace.shared.open(Paths.root) }

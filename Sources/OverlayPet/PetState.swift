@@ -6,13 +6,18 @@ struct PetStateFile: Codable {
     var tool: String?
     var message: String?
     var cwd: String?
+    /// 사용자가 /rename 으로 지은 세션 이름 (없으면 nil → 폴더명 표시)
+    var name: String?
     var sessionId: String?
     var ts: Double
 
     enum CodingKeys: String, CodingKey {
-        case state, tool, message, cwd, ts
+        case state, tool, message, cwd, name, ts
         case sessionId = "session_id"
     }
+
+    /// 말풍선에 보일 세션 표시명
+    var label: String { name ?? cwd ?? "?" }
 
     static func read() -> PetStateFile? {
         guard let data = try? Data(contentsOf: Paths.state) else { return nil }

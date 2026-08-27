@@ -177,7 +177,7 @@ enum Main {
             // 디버그: state <name> [message]
             guard args.count >= 2 else { fail("usage: state <name> [message]") }
             attempt { try PetStateFile(state: args[1], tool: nil, message: args.count > 2 ? args[2...].joined(separator: " ") : nil,
-                                       cwd: nil, sessionId: nil, ts: Date().timeIntervalSince1970).write() }
+                                       cwd: nil, name: nil, sessionId: nil, ts: Date().timeIntervalSince1970).write() }
         default:
             print("""
             OverlayPet — Claude Code 상태를 보여주는 데스크톱 펫
