@@ -220,7 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 갤러리: 체크한 스킬을 주기적으로 돌아가며 재생
             let gal = NSMenu()
             let interval = NSMenu()
-            for sec in [15.0, 30.0, 60.0, 120.0, 300.0] {
+            for sec in [5.0, 15.0, 30.0, 60.0, 120.0, 300.0] {
                 let it = NSMenuItem(title: sec < 60 ? "\(Int(sec))초" : "\(Int(sec / 60))분", action: #selector(setGalleryInterval(_:)), keyEquivalent: "")
                 it.target = self; it.representedObject = sec
                 it.state = (config.galleryInterval ?? 30) == sec ? .on : .off
