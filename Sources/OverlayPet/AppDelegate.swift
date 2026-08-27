@@ -182,10 +182,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sub.addItem(none)
                 sub.addItem(.separator())
                 for item in tierMenus(infos, action: #selector(assignEffect(_:)), tag: state) { sub.addItem(item) }
-                let item = NSMenuItem(title: AnimationMap.stateLabels[state] ?? state, action: nil, keyEquivalent: "")
+                let item = NSMenuItem(title: "\(state) — \(AnimationMap.bubbleText[state] ?? state)", action: nil, keyEquivalent: "")
                 if let cur = config.effects[state], let first = cur.split(separator: ",").first,
                    let info = infos.first(where: { $0.name == String(first) }) {
-                    item.title += "  →  \(info.skillTitle)"
+                    item.title += "   [\(info.skillTitle)]"
                 }
                 item.submenu = sub
                 assign.addItem(item)
@@ -216,7 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let test = NSMenuItem(title: "상태 테스트", action: nil, keyEquivalent: "")
         let tsub = NSMenu()
         for s in ["start", "prompt", "bash", "edit", "notify", "error", "done", "end", "sleep", "idle"] {
-            let it = NSMenuItem(title: AnimationMap.stateLabels[s] ?? s, action: #selector(testState(_:)), keyEquivalent: "")
+            let it = NSMenuItem(title: s, action: #selector(testState(_:)), keyEquivalent: "")
             it.target = self; it.representedObject = s; tsub.addItem(it)
         }
         test.submenu = tsub
