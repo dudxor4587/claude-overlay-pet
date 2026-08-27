@@ -107,7 +107,7 @@ enum FramePlan {
         "A40": 1, "A41": 0,
     ]
 
-    /// 행 순서: 서기 / 걷기(오른쪽, 좌우반전) / 걷기(왼쪽) / 손흔들기 / 점프 / 유령 / 대기 / 공격 / 엎드리기
+    /// 행 순서: 서기 / 걷기(오른쪽, 좌우반전) / 걷기(왼쪽) / 손흔들기 / 점프 / 유령 / 대기 / 찌르기 / 엎드리기
     static let defaultRows: [RowPlan] = [
         RowPlan(action: "A01", emotion: "E00", frames: 6),
         RowPlan(action: "A02", emotion: "E01", frames: 8, flip: true),
@@ -116,7 +116,7 @@ enum FramePlan {
         RowPlan(action: "A06", emotion: "E10", frames: 5),
         RowPlan(action: "A34", emotion: "E03", frames: 8),
         RowPlan(action: "A11", emotion: "E00", frames: 6),
-        RowPlan(action: "A14", emotion: "E15", frames: 6),
+        RowPlan(action: "A24", emotion: "E00", frames: 6),   // 찌르기: 휘두르기(A14)보다 작고 조용한 동작
         RowPlan(action: "A12", emotion: "E09", frames: 6),
     ]
 
