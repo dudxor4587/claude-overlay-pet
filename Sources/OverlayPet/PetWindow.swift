@@ -80,12 +80,36 @@ final class PetView: NSView {
         needsLayout = true
     }
 
+    /// 서기(0행) 프레임에서 머리 꼭대기까지의 셀 안 여백(픽셀). 말풍선을 머리 바로 위에 붙이기 위해.
+    private var headInset: CGFloat = 0
+
     func setSheet(_ sheet: SpriteSheet?) {
         self.sheet = sheet
         alpha = sheet.flatMap { Raster.alphaMask($0.image) }
         spriteLayer.contents = sheet?.image
+        headInset = measureHeadInset()
         needsLayout = true
         play(state: currentState, force: true)
+    }
+
+    /// 머리 부분(꼭대기부터 40px)의 가로 중심. 무기·이펙트로 전체 폭이 치우쳐도 머리 위에 말풍선이 오게.
+    private var headCenterX: CGFloat = 96
+
+    private func measureHeadInset() -> CGFloat {
+        guard let s = sheet, let a = alpha else { return 0 }
+        let w = s.image.width
+        var top: Int?
+        var sumX = 0, count = 0
+        for y in 0..<s.frameHeight {
+            if let t = top, y - t > 40 { break }
+            let rowBase = y * w
+            for x in 0..<s.frameWidth where x < w && a[rowBase + x] > 8 {   // 0행 0열 프레임만
+                if top == nil { top = y }
+                sumX += x; count += 1
+            }
+        }
+        headCenterX = count > 0 ? CGFloat(sumX) / CGFloat(count) : CGFloat(s.frameWidth) / 2
+        return CGFloat(top ?? 0)
     }
 
     override func layout() {
@@ -93,7 +117,10 @@ final class PetView: NSView {
         let sz = spriteSize
         let x = (bounds.width - sz.width) / 2
         spriteLayer.frame = CGRect(x: x, y: bounds.height - sz.height, width: sz.width, height: sz.height)
-        bubble.frame = CGRect(x: 0, y: 0, width: bounds.width, height: Self.bubbleHeight)
+        let headTop = spriteLayer.frame.minY + headInset * scale
+        // 말풍선 폭은 창 전체, 중심은 머리 위에
+        let cx = spriteLayer.frame.minX + headCenterX * scale
+        bubble.frame = CGRect(x: cx - bounds.width / 2, y: max(0, headTop - Self.bubbleHeight), width: bounds.width, height: Self.bubbleHeight)
         layoutEffect()
     }
 
@@ -247,7 +274,7 @@ final class BubbleView: NSView {
         let maxW = bounds.width - 16
         let size = (text as NSString).boundingRect(with: NSSize(width: maxW - 20, height: bounds.height - 24), options: [.usesLineFragmentOrigin], attributes: attrs).size
         let w = min(maxW, size.width + 24), h = min(bounds.height - 12, size.height + 14)
-        let box = NSRect(x: (bounds.width - w) / 2, y: bounds.height - h - 10, width: w, height: h)
+        let box = NSRect(x: (bounds.width - w) / 2, y: bounds.height - h - 16, width: w, height: h)
         let path = NSBezierPath(roundedRect: box, xRadius: 10, yRadius: 10)
         // 꼬리
         path.move(to: NSPoint(x: box.midX - 6, y: box.maxY))
