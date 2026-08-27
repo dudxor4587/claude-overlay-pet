@@ -79,30 +79,45 @@ struct Effect {
     }
 }
 
-/// 스킬 조각들을 게임 순서대로 배치한다.
-///   Prepare → Keydown 1,2… → Keydown End 1,2… 는 차례로, Effect/Ball 은 본 동작과 동시에, Hit 는 살짝 늦게 앞쪽에.
+/// 스킬 조각들을 게임 순서대로 배치한다. 변형 이름 어휘는 전 직업 공통(WZ 구조)이라 직업별 예외가 없다.
+///   선행(Prepare/Charge) → 본동작(Keydown/Loop/Repeat, 차례로) → 마무리(Keydown End/End)
+///   Effect/Special/Ball/Screen/FX 는 본동작과 동시, Tile 은 순차로 앞으로 퍼지고, Hit/Mob 은 살짝 늦게 앞쪽.
+///   Summon 계열(소환수 상태)은 "전체"에서 제외.
 enum EffectSequencer {
     struct Item { let effect: Effect; let delay: Double; let offsetX: Double }
 
+    enum Kind { case prepare, main, end, tile, hit, concurrent, summon }
+
+    static func kind(of e: Effect) -> Kind {
+        let v = (e.manifest.variant ?? "").lowercased().replacingOccurrences(of: " ", with: "")
+        if v.contains("summon") { return .summon }
+        if v.hasPrefix("prepare") || v.hasPrefix("charge") { return v.contains("hit") ? .hit : .prepare }
+        if v.hasPrefix("keydownend") || v == "end" || v.hasPrefix("end") { return .end }
+        if v.hasPrefix("keydown") || v.hasPrefix("loop") || v.hasPrefix("repeat") { return .main }
+        if v.hasPrefix("tile") { return .tile }
+        if v.hasPrefix("hit") || v.hasPrefix("mob") || v.contains("hit") || v.hasPrefix("dieaffected") || v.hasPrefix("affected") { return .hit }
+        return .concurrent   // effect, special, ball, screen, fx, affect, start, (없음) …
+    }
+
+    static func isSummon(_ e: Effect) -> Bool { kind(of: e) == .summon }
+
     static func plan(_ effects: [Effect]) -> [Item] {
-        func v(_ e: Effect) -> String { (e.manifest.variant ?? "").lowercased().replacingOccurrences(of: " ", with: "") }
+        func v(_ e: Effect) -> String { (e.manifest.variant ?? "").lowercased() }
         func dur(_ e: Effect) -> Double { Double(e.manifest.frames) / max(1, e.manifest.fps) }
         func num(_ e: Effect) -> Int { Int(v(e).filter(\.isNumber)) ?? 0 }
-        let prepare = effects.filter { v($0).hasPrefix("prepare") }.sorted { num($0) < num($1) }
-        let keydownEnd = effects.filter { v($0).hasPrefix("keydownend") || v($0) == "end" }.sorted { num($0) < num($1) }
-        let keydown = effects.filter { v($0).hasPrefix("keydown") && !v($0).hasPrefix("keydownend") }.sorted { num($0) < num($1) }
-        let hits = effects.filter { v($0).hasPrefix("hit") }
-        let used = Set((prepare + keydownEnd + keydown + hits).map(\.name))
-        let rest = effects.filter { !used.contains($0.name) }
+        func ordered(_ k: Kind) -> [Effect] { effects.filter { kind(of: $0) == k }.sorted { (num($0), v($0)) < (num($1), v($1)) } }
 
         var items: [Item] = []
         var t = 0.0
-        for p in prepare { items.append(Item(effect: p, delay: t, offsetX: 0)); t += dur(p) }
+        for p in ordered(.prepare) { items.append(Item(effect: p, delay: t, offsetX: 0)); t += dur(p) }
         let mainStart = t
-        for k in keydown { items.append(Item(effect: k, delay: t, offsetX: 0)); t += dur(k) }
-        for k in keydownEnd { items.append(Item(effect: k, delay: t, offsetX: 0)); t += dur(k) }
-        for r in rest { items.append(Item(effect: r, delay: mainStart, offsetX: 0)) }
-        for h in hits { items.append(Item(effect: h, delay: mainStart + 0.15, offsetX: 40)) }   // 몬스터가 앞에 있는 것처럼
+        for k in ordered(.main) { items.append(Item(effect: k, delay: t, offsetX: 0)); t += dur(k) }
+        for k in ordered(.end) { items.append(Item(effect: k, delay: t, offsetX: 0)); t += dur(k) }
+        for r in ordered(.concurrent) { items.append(Item(effect: r, delay: mainStart, offsetX: 0)) }
+        for (i, tile) in ordered(.tile).enumerated() {   // 바닥으로 퍼지는 장판: 순차로 앞으로
+            items.append(Item(effect: tile, delay: mainStart + 0.08 * Double(i), offsetX: 30 * Double(i)))
+        }
+        for h in ordered(.hit) { items.append(Item(effect: h, delay: mainStart + 0.15, offsetX: 40)) }   // 몬스터가 앞에 있는 것처럼
         return items
     }
 }

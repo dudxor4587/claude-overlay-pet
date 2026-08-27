@@ -280,8 +280,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     tierMenu.addItem(leaf(v, title: v.variant.isEmpty ? skill : "\(skill) · \(v.variant)"))
                 } else {
                     let skillMenu = NSMenu()
-                    let all = variants.map(\.name).joined(separator: ",")
-                    let allItem = NSMenuItem(title: "전체 (\(variants.count)개 겹쳐 재생)", action: action, keyEquivalent: "")
+                    let allNames = variants.filter { !($0.variant.lowercased().contains("summon")) }.map(\.name)
+                    let all = allNames.joined(separator: ",")
+                    let allItem = NSMenuItem(title: "전체 (\(allNames.count)개, 게임 순서로 재생)", action: action, keyEquivalent: "")
                     allItem.target = self
                     allItem.representedObject = tag.map { [$0, all] as Any } ?? all
                     if let tag, assigned[tag] == all { allItem.state = .on }
