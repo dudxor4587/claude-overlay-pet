@@ -57,6 +57,12 @@ enum AnimationMap {
         defaults.merging(config.animations ?? [:]) { _, user in user }
     }
 
+    /// 메뉴에 보이는 상태 이름
+    static let stateLabels: [String: String] = [
+        "start": "세션 시작", "prompt": "프롬프트 입력", "bash": "명령 실행", "edit": "파일 수정",
+        "notify": "알림", "error": "오류", "done": "작업 완료", "end": "세션 종료", "sleep": "잠듦", "idle": "대기",
+    ]
+
     static let bubbleText: [String: String] = [
         "start": "안녕! 세션 시작",
         "prompt": "생각 중…",
