@@ -94,6 +94,10 @@ final class PetView: NSView {
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
     }
 
+    /// 다이얼로그가 떠 있는 동안에는 무조건 통과시킨다.
+    /// 펫 창은 .floating(3) 이라 NSAlert(레벨 0) 보다 위에 있어서, 겹친 자리의 클릭·휠을 펫 창이 먹어 버린다.
+    var forcePassThrough = false { didSet { updatePassThrough() } }
+
     /// 창 단위 클릭 통과. 뷰의 hitTest 만으로는 이펙트가 그려진 영역에서 macOS 가 창에 이벤트를 넘겨 버리므로,
     /// 커서가 캐릭터·말풍선 위에 있을 때만 창이 마우스를 받고 나머지는 항상 아래 창으로 통과시킨다.
     private var mouseMonitors: [Any] = []
@@ -102,6 +106,8 @@ final class PetView: NSView {
         mouseMonitors.forEach(NSEvent.removeMonitor)
         mouseMonitors = []
         guard window != nil else { return }
+        // 전역 모니터는 시스템 전체 이벤트를 거쳐가므로 종류를 늘리지 않는다.
+        // AppKit 의 스크롤 모니터와 같은 레지스트리 락을 쓰기 때문에 휠까지 걸면 스크롤이 느려진다.
         let handler: (NSEvent) -> Void = { [weak self] _ in self?.updatePassThrough() }
         if let g = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged], handler: handler) { mouseMonitors.append(g) }
         if let l = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved], handler: { e in handler(e); return e }) { mouseMonitors.append(l) }
@@ -109,8 +115,11 @@ final class PetView: NSView {
     }
     func updatePassThrough() {
         guard let w = window, dragOffset == nil else { return }
-        let p = convert(w.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-        let over = hitTest(convert(p, to: superview)) != nil
+        var over = false
+        if !forcePassThrough {
+            let p = convert(w.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+            over = hitTest(convert(p, to: superview)) != nil
+        }
         if w.ignoresMouseEvents == over { w.ignoresMouseEvents = !over }
     }
 

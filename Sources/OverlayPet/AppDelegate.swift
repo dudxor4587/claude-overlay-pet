@@ -474,7 +474,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let picker = SkillPicker(skills: skills)
         activePicker = picker                       // 대화상자가 살아 있는 동안 유지
         defer { activePicker = nil }
-        guard let picked = picker.run(title: "\(job) 스킬 이펙트"), !picked.isEmpty else { view.say("취소", seconds: 2); return }
+        view.forcePassThrough = true
+        let picked = picker.run(title: "\(job) 스킬 이펙트")
+        view.forcePassThrough = false
+        guard let picked, !picked.isEmpty else { view.say("취소", seconds: 2); return }
         view.say("\(picked.count)개 스킬 받는 중…", seconds: 60)
         let names = await SkillCatalog.install(picked: picked, petId: config.activePet, job: job) { [weak self] msg in
             Task { @MainActor in self?.view.say(msg, seconds: 60) }
@@ -509,7 +512,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.window.initialFirstResponder = key.stringValue.isEmpty ? key : name
 
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        view.forcePassThrough = true
+        let response = alert.runModal()
+        view.forcePassThrough = false
+        guard response == .alertFirstButtonReturn else { return }
         let apiKey = key.stringValue.trimmingCharacters(in: .whitespaces)
         let charName = name.stringValue.trimmingCharacters(in: .whitespaces)
         guard !apiKey.isEmpty, !charName.isEmpty else { view.say("키와 캐릭터명을 모두 입력해 줘", seconds: 4); return }

@@ -70,7 +70,7 @@ final class SkillPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         search.delegate = self
         container.addSubview(search)
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 440, height: 344))
+        let scroll = MainThreadScrollView(frame: NSRect(x: 0, y: 0, width: 440, height: 344))
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
         let col = NSTableColumn(identifier: .init("c")); col.width = 420
@@ -154,4 +154,18 @@ final class SkillPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         filter = search.stringValue.trimmingCharacters(in: .whitespaces)
         rebuildRows()
     }
+}
+
+/// 휠 스크롤을 AppKit 의 concurrent(responsive) 경로가 아니라 메인 스레드에서 처리하게 한다.
+///
+/// 이 앱은 클릭 통과 판정을 위해 전역·로컬 NSEvent 모니터를 걸어 둔다. 그 상태에서 AppKit 이
+/// 휠 이벤트마다 자기 스크롤 모니터를 등록하려 하면(`_NSScrollingConcurrentEventMonitor
+/// startMonitoring` → `_addConcurrentEventMonitorMatchingMask:`) 같은 모니터 레지스트리 락에서
+/// 부딪혀 한 번에 700ms 가까이 멈춘다. 휠을 굴려도 화면이 굳어 있다가 뒤늦게 툭 내려간다.
+///
+/// `scrollWheel(with:)` 을 재정의하면 AppKit 이 이 스크롤뷰를 responsive scrolling 대상에서
+/// 빼고 예전 경로로 처리한다. 목록은 한 화면 그리는 데 7ms 라 메인 스레드로도 60fps 가 나온다.
+/// 계측값: 휠→화면 지연 중앙 732ms → 1ms.
+final class MainThreadScrollView: NSScrollView {
+    override func scrollWheel(with event: NSEvent) { super.scrollWheel(with: event) }
 }
