@@ -14,6 +14,13 @@ final class SkillPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     private let table = NSTableView()
     private let search = NSSearchField()
     private let installed: Set<String>
+    /// 그릴 때마다 다시 세지 않으려고 미리 잡아둔다 (스크롤 중에는 바뀌지 않는 값들)
+    private var unavailable: [Bool] = []
+    private var tierIndexes: [String: [Int]] = [:]
+
+    private static let cellID = NSUserInterfaceItemIdentifier("skillRow")
+    private static let bold = NSFont.boldSystemFont(ofSize: 12)
+    private static let plain = NSFont.systemFont(ofSize: 12)
 
     init(skills: [MapleWZ.Skill]) {
         var map: [String: [MapleWZ.Skill]] = [:]
@@ -29,6 +36,9 @@ final class SkillPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         }.sorted { ($0.tierOrder, $0.title) < ($1.tierOrder, $1.title) }
         installed = Set(EffectInfo.all().map(\.skill))
         super.init()
+        // 같은 이름의 ID 가 전부 불가일 때만 불가 — 부속 ID 하나가 막혀도 본체는 받아질 수 있다
+        unavailable = groups.map { g in g.variants.allSatisfy { MapleWZ.isBadSkill($0.id) } }
+        for (i, g) in groups.enumerated() { tierIndexes[g.tier, default: []].append(i) }
         rebuildRows()
     }
 
@@ -90,47 +100,53 @@ final class SkillPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
+        // 체크박스는 하나 만드는 데 1.6ms 든다. 줄마다 새로 만들면 한 화면(16줄)에 25ms 라
+        // 60fps 예산(16.7ms)을 넘겨 스크롤이 멈춘다 — 재사용 큐에서 꺼내 내용만 바꾼다.
+        let cb: NSButton
+        if let reused = tableView.makeView(withIdentifier: Self.cellID, owner: self) as? NSButton {
+            cb = reused
+        } else {
+            cb = NSButton(checkboxWithTitle: "", target: self, action: #selector(rowToggled(_:)))
+            cb.identifier = Self.cellID
+        }
+        cb.tag = row
         switch rows[row] {
         case .tier(let name, let count):
-            let idxs = groups.indices.filter { groups[$0].tier == name }
-            let all = !idxs.isEmpty && idxs.allSatisfy { checked.contains($0) }
-            let cb = NSButton(checkboxWithTitle: "\(name)  (\(count))", target: self, action: #selector(toggleTier(_:)))
-            cb.font = .boldSystemFont(ofSize: 12)
-            cb.state = all ? .on : (idxs.contains { checked.contains($0) } ? .mixed : .off)
+            let idxs = tierIndexes[name] ?? []
+            cb.title = "\(name)  (\(count))"
+            cb.font = Self.bold
             cb.allowsMixedState = true
-            cb.tag = row
-            return cb
+            cb.isEnabled = true
+            cb.state = !idxs.isEmpty && idxs.allSatisfy(checked.contains) ? .on
+                     : (idxs.contains(where: checked.contains) ? .mixed : .off)
         case .group(let i):
             let g = groups[i]
-            // 이미 "못 받는다" 고 확인된 스킬 (스킬 단위 판정)
-            // 같은 이름의 ID 하나라도 "못 받음" 이면 그 스킬은 못 받는다 (같은 이미지 파일을 쓴다)
-            // ID 전부가 불가일 때만 불가 — 부속 ID 하나가 막혀도 본체는 받아질 수 있다
-            let unavailable = g.variants.allSatisfy { MapleWZ.isBadSkill($0.id) }
-            let cb = NSButton(checkboxWithTitle: "    \(g.title)"
-                              + (installed.contains(g.skill) ? "  ✓" : "")
-                              + (unavailable ? "  (받을 수 없음)" : ""),
-                              target: self, action: #selector(toggleGroup(_:)))
+            cb.title = "    \(g.title)"
+                + (installed.contains(g.skill) ? "  ✓" : "")
+                + (unavailable[i] ? "  (받을 수 없음)" : "")
+            cb.font = Self.plain
+            cb.allowsMixedState = false
+            cb.isEnabled = !unavailable[i]
             cb.state = checked.contains(i) ? .on : .off
-            cb.isEnabled = !unavailable
-            cb.tag = i
-            return cb
         }
+        return cb
     }
 
     func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { false }
 
     @objc private func rowClicked() {}
 
-    @objc private func toggleGroup(_ sender: NSButton) {
-        if sender.state == .on { checked.insert(sender.tag) } else { checked.remove(sender.tag) }
-        table.reloadData()
-    }
-
-    @objc private func toggleTier(_ sender: NSButton) {
-        guard case .tier(let name, _) = rows[sender.tag] else { return }
-        let idxs = groups.indices.filter { groups[$0].tier == name }
-        if idxs.allSatisfy({ checked.contains($0) }) { idxs.forEach { checked.remove($0) } }
-        else { idxs.forEach { checked.insert($0) } }
+    /// 체크박스를 재사용하므로 액션도 하나다. 어느 줄인지는 tag(행 번호)로 되짚는다.
+    @objc private func rowToggled(_ sender: NSButton) {
+        guard rows.indices.contains(sender.tag) else { return }
+        switch rows[sender.tag] {
+        case .tier(let name, _):
+            let idxs = tierIndexes[name] ?? []
+            if idxs.allSatisfy(checked.contains) { idxs.forEach { checked.remove($0) } }
+            else { idxs.forEach { checked.insert($0) } }
+        case .group(let i):
+            if checked.contains(i) { checked.remove(i) } else { checked.insert(i) }
+        }
         table.reloadData()
     }
 
