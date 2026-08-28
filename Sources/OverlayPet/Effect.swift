@@ -34,6 +34,14 @@ struct EffectManifest: Codable {
     var skillId: String?
     /// 연속기 타수 — 타격 조각을 이만큼 반복 재생한다
     var hitCount: Int?
+    /// WZ `invisible` — 스킬창에 안 보이는 하위 스킬 (연속기 다음 타·각성판·소환수 등)
+    var hidden: Bool?
+    /// WZ `summon` — 소환수를 두는 스킬
+    var summons: Bool?
+    /// 스킬 설명 (String/Skill.img/<id>/desc) — 메뉴 툴팁
+    var desc: String?
+    /// 메타 스키마 버전. 낮으면 다시 받을 때 시트는 두고 이 값들만 채운다.
+    var v: Int?
 }
 
 /// 설치된 이펙트의 매니페스트만 (시트는 안 읽음) — 메뉴 구성용
@@ -86,17 +94,43 @@ struct Effect {
     }
 }
 
+/// 재생 순서를 가르는 데 필요한 최소 정보 — 로드된 Effect 와 매니페스트만 읽은 EffectInfo 둘 다 만족한다.
+protocol EffectPiece {
+    var pieceId: String { get }        // 스킬 ID
+    var pieceVariant: String { get }   // "시전", "holding", "준비" …
+    var pieceHidden: Bool { get }      // WZ invisible — 스킬창에 없는 하위 스킬
+    var pieceSummons: Bool { get }     // WZ summon — 소환수를 두는 스킬
+}
+
+extension Effect: EffectPiece {
+    var pieceId: String { manifest.skillId ?? name }
+    var pieceVariant: String { manifest.variant ?? "" }
+    var pieceHidden: Bool { manifest.hidden ?? false }
+    var pieceSummons: Bool { manifest.summons ?? false }
+}
+
+extension EffectInfo: EffectPiece {
+    var pieceId: String { manifest.skillId ?? name }
+    var pieceVariant: String { variant }
+    var pieceHidden: Bool { manifest.hidden ?? false }
+    var pieceSummons: Bool { manifest.summons ?? false }
+}
+
 /// 스킬 조각들을 게임 순서대로 배치한다. 변형 이름 어휘는 전 직업 공통(WZ 구조)이라 직업별 예외가 없다.
 ///   선행(Prepare/Charge) → 본동작(Keydown/Loop/Repeat, 차례로) → 마무리(Keydown End/End)
 ///   Effect/Special/Ball/Screen/FX 는 본동작과 동시, Tile 은 순차로 앞으로 퍼지고, Hit/Mob 은 살짝 늦게 앞쪽.
-///   Summon 계열(소환수 상태)은 "전체"에서 제외.
+///   Summon 계열은 소환수 대기(stand)만 가져와 시전이 끝난 뒤 잠시 세운다.
 enum EffectSequencer {
-    struct Item { let effect: Effect; let delay: Double; let offsetX: Double }
+    /// loops: 같은 조각을 이어서 몇 번 도는지 (키다운 루프). 조각을 여러 개로 쪼개면
+    /// 전환마다 새 레이어가 뜨면서 이음매가 보여서, 한 조각을 그대로 반복하게 한다.
+    struct Item { let effect: Effect; let delay: Double; let offsetX: Double; var loops: Int = 1 }
 
     enum Kind { case prepare, main, end, tile, hit, concurrent, summon }
 
-    static func kind(of e: Effect) -> Kind {
-        let v = (e.manifest.variant ?? "").lowercased().replacingOccurrences(of: " ", with: "")
+    static func kind(of e: Effect) -> Kind { kind(ofVariant: e.manifest.variant ?? "") }
+
+    static func kind(ofVariant variant: String) -> Kind {
+        let v = variant.lowercased().replacingOccurrences(of: " ", with: "")
         if v.contains("summon") || v.contains("소환") { return .summon }
         if v.hasPrefix("준비") || v.hasPrefix("prepare") || v.hasPrefix("charge") { return v.contains("hit") ? .hit : .prepare }
         if v.hasPrefix("holding끝") || v.hasPrefix("keydownend") || v.hasPrefix("end") { return .end }
@@ -109,7 +143,64 @@ enum EffectSequencer {
 
     static func isSummon(_ e: Effect) -> Bool { kind(of: e) == .summon }
 
-    static func plan(_ effects: [Effect]) -> [Item] {
+    /// 이름이 같은 조각들을 "이어 재생할 한 벌" 단위로 가른다.
+    /// WZ 는 한 한글 이름 아래에 스킬 ID 를 여럿 두는데, 성격이 네 가지로 갈린다:
+    ///   ① 연속기의 다음 타      — 이어 재생해야 한다 (데몬 슬래시 VI 31141002~005)
+    ///   ② 서로 대체되는 형태    — 하나만 (데몬 베인: 일반 400011110 / 각성 400011111)
+    ///   ③ 버프가 거는 별개 공격 — 시전과 따로 (데몬 어웨이크닝 400011006 버프 + 007·008·009·018 각성 슬래시)
+    ///   ④ 소환수 ID            — 캐릭터 기준 조각(특수 등)은 소환수 자리 기준이라 버리고,
+    ///                            소환수 자신(stand)만 남겨 시전 뒤에 붙인다
+    /// 가르는 신호는 WZ 노드에 다 있다:
+    ///   invisible = 스킬창에 없는 하위 스킬 (①②③④ 모두 해당하므로 이것만으론 못 가른다)
+    ///   summon    = 소환수를 둔다. 숨김 ID 에 붙으면 ④, 보이는 부모에 붙으면 그 부모는 버프라 ③
+    ///   keydown 한 벌이 ID 마다 완결 = ② (키다운 스킬은 다른 키다운 스킬로 이어질 수 없다)
+    /// 쓸 조각이 하나도 안 남으면 빈 배열 — 부르는 쪽이 그 스킬을 메뉴에서 뺀다.
+    static func forms<T: EffectPiece>(_ pieces: [T]) -> [(id: String, pieces: [T])] {
+        // 소환수는 ID 여럿이 같은 것을 중복으로 들고 있다 (오르트로스 077·078). 스킬당 하나만 쓴다.
+        let creature = pieces.filter { kind(ofVariant: $0.pieceVariant) == .summon }
+            .sorted { $0.pieceId < $1.pieceId }.prefix(1)
+        let cast = pieces.filter { kind(ofVariant: $0.pieceVariant) != .summon }
+
+        var byId: [String: [T]] = [:]
+        for p in cast { byId[p.pieceId, default: []].append(p) }
+        func any(_ id: String, _ test: (T) -> Bool) -> Bool { byId[id]!.contains(where: test) }
+
+        // ④ 소환수 ID 가 들고 있는 캐릭터 기준 조각은 버린다 (스파이더 인 미러의 특수 0/1/2)
+        let ids = byId.keys.sorted().filter { !(any($0) { $0.pieceHidden } && any($0) { $0.pieceSummons }) }
+
+        func result(_ groups: [(id: String, pieces: [T])]) -> [(id: String, pieces: [T])] {
+            guard var first = groups.first else {
+                return creature.isEmpty ? [] : [(id: creature[0].pieceId, pieces: Array(creature))]
+            }
+            first.pieces += creature          // 소환수는 첫 항목(시전) 뒤에 붙는다
+            return [first] + groups.dropFirst()
+        }
+
+        guard let head = ids.first else { return result([]) }
+        guard ids.count >= 2 else { return result([(id: head, pieces: byId[head]!)]) }
+
+        // ② 준비/holding/끝 한 벌이 ID 마다 완결돼 있으면 이어 붙일 수 없는 별개 형태다
+        let keydown = ids.filter { any($0) { kind(ofVariant: $0.pieceVariant) == .main } }
+        if keydown.count >= 2 {
+            let shared = ids.filter { !keydown.contains($0) }.flatMap { byId[$0]! }
+            return result(keydown.map { (id: $0, pieces: byId[$0]! + shared) })
+        }
+
+        // ③ 보이는 부모가 소환수를 두면 버프 — 숨김 하위는 시전의 뒷부분이 아니라 별개 공격이다
+        let hidden = ids.filter { any($0) { $0.pieceHidden } }
+        let visible = ids.filter { !any($0) { $0.pieceHidden } }
+        guard !hidden.isEmpty, let front = visible.first, visible.contains(where: { any($0) { $0.pieceSummons } }) else {
+            return result([(id: head, pieces: ids.flatMap { byId[$0]! })])   // ① 연속기 — 이어 붙인다
+        }
+        return result([(id: front, pieces: visible.flatMap { byId[$0]! }),
+                       (id: hidden[0], pieces: hidden.flatMap { byId[$0]! })])
+    }
+
+    static func plan(_ rawEffects: [Effect]) -> [Item] {
+        // 대체 형태가 섞여 들어오면 (예전에 저장된 바인딩·갤러리) 첫 형태만 재생한다.
+        let effects = Dictionary(grouping: rawEffects, by: { $0.manifest.skill ?? $0.name })
+            .sorted { $0.key < $1.key }
+            .flatMap { forms($0.value).first?.pieces ?? [] }
         func v(_ e: Effect) -> String { (e.manifest.variant ?? "").lowercased() }
         func dur(_ e: Effect) -> Double {
             if let d = e.manifest.delays, !d.isEmpty { return Double(d.reduce(0, +)) / 1000 }
@@ -129,7 +220,8 @@ enum EffectSequencer {
         let hold = 1.5
         for k in ordered(.main) {
             let d = max(dur(k), 0.05), loops = max(1, Int((hold / d).rounded(.up)))
-            for _ in 0..<loops { items.append(Item(effect: k, delay: t, offsetX: 0)); t += d }
+            items.append(Item(effect: k, delay: t, offsetX: 0, loops: loops))
+            t += d * Double(loops)
         }
         for k in ordered(.end) { items.append(Item(effect: k, delay: t, offsetX: 0)); t += dur(k) }
 
@@ -165,6 +257,13 @@ enum EffectSequencer {
             at += longest + 0.12
         }
         for r in extras { items.append(Item(effect: r, delay: mainStart, offsetX: 0)) }
+        // 소환수는 시전이 끝난 뒤 나타난다. stand 는 게임에선 소환이 유지되는 내내 도는 무한 루프라
+        // 한 바퀴만 돌리면 0.6초 만에 사라진다 — 이 시간만큼 반복하고 사라지게 한다.
+        let linger = 3.0
+        for c in ordered(.summon) {
+            let d = max(dur(c), 0.05)
+            items.append(Item(effect: c, delay: at, offsetX: 0, loops: max(1, Int((linger / d).rounded(.up)))))
+        }
         for (i, tile) in ordered(.tile).enumerated() { items.append(Item(effect: tile, delay: mainStart + 0.06 * Double(i), offsetX: 0)) }
         return items
     }

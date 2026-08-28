@@ -349,25 +349,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let tierMenu = NSMenu()
             let bySkill = Dictionary(grouping: byTier[tier]!, by: { $0.skillTitle })
             for skill in bySkill.keys.sorted() {
-                // 소환수·타격 조각은 제외 (타격은 몬스터 자리 기준이라 캐릭터에 맞출 수 없다)
-                let pieces = bySkill[skill]!.filter {
+                // 타격 조각은 제외 (몬스터 자리 기준이라 캐릭터에 맞출 수 없다)
+                let usable = bySkill[skill]!.filter {
                     let v = $0.variant.lowercased()
-                    return !v.contains("summon") && !v.contains("소환") && !v.hasPrefix("타격") && !v.hasPrefix("몹") && !v.hasPrefix("피격")
-                }.map(\.name).sorted()
-                guard !pieces.isEmpty else { continue }
-                let value = pieces.joined(separator: ",")
-                let it = NSMenuItem(title: skill, action: action, keyEquivalent: "")
-                it.target = self
-                it.representedObject = tag.map { [$0, value] as Any } ?? value
-                if tag == "gallery" {
-                    if bindings.gallery.contains(value) { it.state = .on }
-                } else if let tag, let cur = assigned[tag], Set(cur.split(separator: ",").map(String.init)).isSubset(of: Set(pieces)) { it.state = .on }
-                tierMenu.addItem(it)
+                    // 소환수(stand)는 이제 제대로 가져오므로 빼지 않는다 — 어느 항목에 붙일지는 forms 가 정한다
+                    return !v.contains("summon") && !v.hasPrefix("타격") && !v.hasPrefix("몹") && !v.hasPrefix("피격")
+                }
+                // 이름이 같아도 게임에서 서로 대체되는 형태면 (데몬 베인: 일반 / 각성) 항목을 나눈다.
+                let forms = EffectSequencer.forms(usable)
+                for (i, form) in forms.enumerated() {
+                    let pieces = form.pieces.map(\.name).sorted()
+                    guard !pieces.isEmpty else { continue }
+                    let value = pieces.joined(separator: ",")
+                    let it = NSMenuItem(title: forms.count > 1 ? "\(skill) \(Self.formMark(i))" : skill,
+                                        action: action, keyEquivalent: "")
+                    it.target = self
+                    // 형태가 갈린 항목은 어느 쪽인지 이름만으론 모른다 — 넥슨이 쓴 스킬 설명을 그대로 보여준다.
+                    if forms.count > 1 {
+                        let d = form.pieces.first?.manifest.desc?.replacingOccurrences(of: "\\n", with: "\n")
+                        it.toolTip = [d, "스킬 ID \(form.id)"].compactMap { $0 }.joined(separator: "\n\n")
+                    }
+                    it.representedObject = tag.map { [$0, value] as Any } ?? value
+                    if tag == "gallery" {
+                        if bindings.gallery.contains(value) { it.state = .on }
+                    } else if let tag, let cur = assigned[tag], Set(cur.split(separator: ",").map(String.init)).isSubset(of: Set(pieces)) { it.state = .on }
+                    tierMenu.addItem(it)
+                }
             }
             let it = NSMenuItem(title: "\(tier) (\(bySkill.count))", action: nil, keyEquivalent: "")
             it.submenu = tierMenu
             return it
         }
+    }
+
+    /// 대체 형태가 여럿인 스킬의 항목 구분 표시 (①②③…)
+    private static func formMark(_ i: Int) -> String {
+        let marks = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"]
+        return i < marks.count ? marks[i] : "(\(i + 1))"
     }
 
     static let effectStates = ["start", "prompt", "bash", "edit", "notify", "error", "done", "end"]
@@ -397,15 +415,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func clearGallery() { bindings.gallery = []; try? bindings.save(config.activePet) }
 
-    /// 설치된 스킬 전부(소환수 조각 제외)를 갤러리에
+    /// 설치된 스킬 전부를 갤러리에 (형태가 갈린 스킬은 형태마다 한 항목)
     @objc private func selectAllGallery() {
         let bySkill = Dictionary(grouping: EffectInfo.all(), by: { "\($0.tierOrder)|\($0.skillTitle)" })
-        bindings.gallery = bySkill.keys.sorted().compactMap { key in
-            let pieces = bySkill[key]!.filter {
+        bindings.gallery = bySkill.keys.sorted().flatMap { key -> [String] in
+            let usable = bySkill[key]!.filter {
                 let v = $0.variant.lowercased()
-                return !v.contains("summon") && !v.contains("소환") && !v.hasPrefix("타격") && !v.hasPrefix("몹") && !v.hasPrefix("피격")
-            }.map(\.name).sorted()
-            return pieces.isEmpty ? nil : pieces.joined(separator: ",")
+                // 소환수(stand)는 이제 제대로 가져오므로 빼지 않는다 — 어느 항목에 붙일지는 forms 가 정한다
+                return !v.contains("summon") && !v.hasPrefix("타격") && !v.hasPrefix("몹") && !v.hasPrefix("피격")
+            }
+            return EffectSequencer.forms(usable).compactMap { form in
+                let pieces = form.pieces.map(\.name).sorted()
+                return pieces.isEmpty ? nil : pieces.joined(separator: ",")
+            }
         }
         try? bindings.save(config.activePet)
     }

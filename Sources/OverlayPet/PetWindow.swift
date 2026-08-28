@@ -43,8 +43,9 @@ final class PetView: NSView {
         let offsetX: CGFloat
         let layer = CALayer()
         var frame = 0
+        var loops: Int          // 남은 반복 횟수 (키다운 루프)
         var timer: Timer?
-        init(_ e: Effect, offsetX: CGFloat) { effect = e; self.offsetX = offsetX }
+        init(_ e: Effect, offsetX: CGFloat, loops: Int) { effect = e; self.offsetX = offsetX; self.loops = loops }
         deinit { timer?.invalidate(); layer.removeFromSuperlayer() }
     }
     private var players: [EffectPlayer] = []
@@ -242,27 +243,33 @@ final class PetView: NSView {
         players.removeAll()
         scheduled.forEach { $0.cancel() }; scheduled.removeAll(); pendingCount = 0
         for item in EffectSequencer.plan(effects) {
-            if item.delay <= 0 { start(item.effect, offsetX: CGFloat(item.offsetX)); continue }
-            let w = DispatchWorkItem { [weak self] in self?.pendingCount -= 1; self?.start(item.effect, offsetX: CGFloat(item.offsetX)) }
-            scheduled.append(w); pendingCount += 1
-            DispatchQueue.main.asyncAfter(deadline: .now() + item.delay, execute: w)
-        }
-    }
-
-    private func start(_ e: Effect, offsetX: CGFloat) {
-        do {
-            let p = EffectPlayer(e, offsetX: offsetX)
+            // 조각을 차례가 왔을 때 만들면 첫 프레임에서 시트(수 MB)를 GPU 로 올리느라 한 번 걸린다.
+            // 레이어·이미지는 지금 다 올려 두고, 차례가 오면 숨김만 푼다.
+            let p = EffectPlayer(item.effect, offsetX: CGFloat(item.offsetX), loops: item.loops)
             p.layer.magnificationFilter = .nearest
             p.layer.contentsGravity = .resize
             p.layer.actions = spriteLayer.actions
-            p.layer.contents = e.image
+            p.layer.contents = item.effect.image
             p.layer.opacity = effectOpacity
-            p.layer.contentsRect = e.contentsRect(frame: 0)
+            p.layer.contentsRect = item.effect.contentsRect(frame: 0)
+            p.layer.isHidden = true
             layer?.addSublayer(p.layer)
             players.append(p)
-            scheduleNextFrame(p)
+            if item.delay <= 0 { begin(p); continue }
+            let w = DispatchWorkItem { [weak self, weak p] in
+                self?.pendingCount -= 1
+                if let p { self?.begin(p) }
+            }
+            scheduled.append(w); pendingCount += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + item.delay, execute: w)
         }
         layoutEffect()
+    }
+
+    private func begin(_ p: EffectPlayer) {
+        guard players.contains(where: { $0 === p }) else { return }
+        p.layer.isHidden = false
+        scheduleNextFrame(p)
     }
 
     /// WZ 의 프레임별 delay(ms)를 그대로 쓴다. 없으면 fps 로 균등.
@@ -276,7 +283,9 @@ final class PetView: NSView {
             guard let self, let p else { return }
             p.frame += 1
             if p.frame >= m.frames {
-                if m.loop { p.frame = 0 } else { self.players.removeAll { $0 === p }; return }
+                p.loops -= 1
+                if p.loops > 0 || m.loop { p.frame = 0 }
+                else { self.players.removeAll { $0 === p }; return }
             }
             p.layer.contentsRect = p.effect.contentsRect(frame: p.frame)
             self.scheduleNextFrame(p)

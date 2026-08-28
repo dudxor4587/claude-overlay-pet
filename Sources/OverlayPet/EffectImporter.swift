@@ -9,6 +9,8 @@ import UniformTypeIdentifiers
 /// 에셋은 사용자가 요청할 때 런타임에만 받는다. 레포에는 넣지 않는다.
 enum EffectImporter {
     static let maxFrameSide = 512
+    /// effect.json 메타 스키마. 올리면 다음 "다시 받기" 때 시트는 두고 메타만 갱신한다.
+    static let manifestVersion = 2
 
     /// 애니메이션 한 덩어리 = 스킬의 조각 하나
     struct Skill {
@@ -19,6 +21,9 @@ enum EffectImporter {
         let tierOrder: Int
         let framePaths: [String]   // WZ 경로 (프레임 순)
         var hitCount: Int = 1      // common/attackCount — 연속기는 타격이 여러 번 들어간다
+        var hidden = false         // invisible — 스킬창에 없는 하위 스킬
+        var summons = false        // summon — 소환수를 두는 스킬
+        var desc: String?          // String/Skill.img/<id>/desc — 메뉴 툴팁
 
         /// 파일 이름 겸 고유 키
         var name: String { SheetBuilder.slug("\(skillName)-\(variant)-\(skillId)") }
@@ -119,12 +124,20 @@ enum EffectImporter {
         let base = "Skill/\(s.img).img/skill/\(s.id)"
         let tier = s.tier
         let order = s.tierOrder
-        // 연속기 타수 (타격 조각을 이만큼 반복 재생한다)
+        // 한 한글 이름에 ID 가 여럿 붙는 이유를 가려내는 신호. 노드 목록에 이미 있어 왕복이 늘지 않는다.
+        //   invisible — 스킬창에 안 보이는 하위 스킬,  summon — 소환수를 두는 스킬
+        let hidden = ch.contains("invisible")
+        let summons = ch.contains("summon")
+
+        // 연속기 타수 (타격 조각을 이만큼 반복 재생한다) + 메뉴 툴팁에 쓸 스킬 설명
+        async let countTask = MapleWZ.value("\(base)/common/attackCount")
+        async let descTask = MapleWZ.value("String/Skill.img/\(s.id)/desc")
         var hits = 1
-        if let v = (try? await MapleWZ.value("\(base)/common/attackCount")) {
+        if let v = ((try? await countTask) ?? nil) {
             if let n = v as? Int { hits = n } else if let str = v as? String, let n = Int(str) { hits = n }
         }
         hits = max(1, min(hits, 12))
+        let desc = (((try? await descTask) ?? nil) as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
 
         func numeric(_ xs: [String]) -> [String] {
             xs.filter { !$0.isEmpty && $0.allSatisfy(\.isNumber) }.sorted { (Int($0) ?? 0) < (Int($1) ?? 0) }
@@ -158,20 +171,35 @@ enum EffectImporter {
                             guard frames.count >= 2 else { continue }
                             made.append(Skill(skillId: s.id, skillName: s.name, variant: "\(label(key)) \(v)",
                                               tier: tier, tierOrder: order,
-                                              framePaths: frames.map { "\(base)/\(key)/\(v)/\($0)" }, hitCount: hits))
+                                              framePaths: frames.map { "\(base)/\(key)/\(v)/\($0)" },
+                                              hitCount: hits, hidden: hidden, summons: summons, desc: desc))
                         }
                         return made
                     }
                     guard nums.count >= 2 else { return [] }
                     return [Skill(skillId: s.id, skillName: s.name, variant: label(key),
                                   tier: tier, tierOrder: order,
-                                  framePaths: nums.map { "\(base)/\(key)/\($0)" }, hitCount: hits)]
+                                  framePaths: nums.map { "\(base)/\(key)/\($0)" },
+                                  hitCount: hits, hidden: hidden, summons: summons, desc: desc)]
                 }
             }
             for _ in 0..<4 { next() }
             for await made in group {
                 if let made { out += made } else { failed = true }
                 next()
+            }
+        }
+
+        // 소환수: `summon` 아래는 한 덩어리 애니메이션이 아니라 stand·move·attack1·die·summoned 상태 기계다.
+        // 그중 `stand` 만 쓴다 — 조사한 소환 스킬 28개에 하나도 빠짐없이 있고(attack1 은 23/28),
+        // 그 자체로 완결된 루프라 "잠깐 서 있다가 사라지는" 그림을 그대로 만들 수 있다.
+        if summons {
+            let frames = numeric((try? await MapleWZ.children("\(base)/summon/stand")) ?? [])
+            if frames.count >= 2 {
+                out.append(Skill(skillId: s.id, skillName: s.name, variant: "소환수",
+                                 tier: tier, tierOrder: order,
+                                 framePaths: frames.map { "\(base)/summon/stand/\($0)" },
+                                 hitCount: hits, hidden: hidden, summons: summons, desc: desc))
             }
         }
         return (out, failed)
@@ -330,9 +358,27 @@ enum EffectImporter {
         m.tierOrder = skill.tierOrder
         m.skillId = skill.skillId
         m.hitCount = skill.hitCount
+        m.hidden = skill.hidden ? true : nil
+        m.summons = skill.summons ? true : nil
+        m.desc = skill.desc
+        m.v = manifestVersion
         let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         try enc.encode(m).write(to: dir.appendingPathComponent("effect.json"))
         return name
+    }
+
+    /// 이미 받아둔 조각의 메타만 최신 스키마로 맞춘다. 프레임을 다시 내려받지 않으려고 시트는 건드리지 않는다.
+    static func refreshMeta(_ skill: Skill) {
+        let url = Paths.effectDirectory(skill.name).appendingPathComponent("effect.json")
+        guard var m = try? JSONDecoder().decode(EffectManifest.self, from: Data(contentsOf: url)),
+              m.v ?? 1 < manifestVersion else { return }
+        m.hitCount = skill.hitCount
+        m.hidden = skill.hidden ? true : nil
+        m.summons = skill.summons ? true : nil
+        m.desc = skill.desc
+        m.v = manifestVersion
+        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try? enc.encode(m).write(to: url)
     }
 
     /// 여러 조각 설치. 이미 있으면 건너뛴다.
@@ -344,6 +390,7 @@ enum EffectImporter {
             done += 1
             if deadSkills.contains(s.skillId) { continue }
             if FileManager.default.fileExists(atPath: Paths.effectDirectory(s.name).appendingPathComponent("effect.json").path) {
+                refreshMeta(s)   // 시트는 그대로, 새로 생긴 메타(플래그·설명)만 채운다
                 names.append(s.name); continue
             }
             progress("\(done)/\(skills.count) \(s.displayName)")
