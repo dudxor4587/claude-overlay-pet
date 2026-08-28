@@ -3,6 +3,7 @@ import AppKit
 @main
 enum Main {
     static func main() {
+        setlinebuf(stdout)   // 파이프로 넘겨도 진행 줄이 바로 나오게
         let args = Array(CommandLine.arguments.dropFirst())
         switch args.first {
         case nil, "run":
@@ -71,18 +72,18 @@ enum Main {
             attempt { try cfg.save() }
             print("기본 펫 생성: \(Paths.petDirectory(DefaultPet.id).path)")
         case "effects", "effect":
-            // effect list | effect fetch <페이지URL> [--skill NAME] [--state S] | effect set <state> <name|none>
+            // effect list | effect fetch [--tiers …|--all|--skill 이름] [--state S] | effect set <state> <name|none>
             let sub = Array(args.dropFirst())
             switch sub.first {
             case nil, "list":
                 let list = Effect.installed(), b = PetBindings.load(Config.load().activePet)
-                if list.isEmpty { print("설치된 이펙트 없음. effect fetch <mapleeditors 페이지 URL> 로 가져오세요.") }
+                if list.isEmpty { print("설치된 이펙트 없음. effect fetch 로 가져오세요.") }
                 for e in list {
                     let states = b.effects.filter { $0.value.split(separator: ",").contains(Substring(e)) }.map(\.key).sorted().joined(separator: ",")
                     print(states.isEmpty ? "  \(e)" : "  \(e)  ← \(states)")
                 }
             case "fetch":
-                var url: URL?, skill: String?, state: String?, all = false, tiers: Set<String>?
+                var skill: String?, state: String?, all = false, tiers: Set<String>?
                 var it = sub.dropFirst().makeIterator()
                 while let a = it.next() {
                     switch a {
@@ -90,44 +91,38 @@ enum Main {
                     case "--state": state = it.next()
                     case "--pet": Paths.overridePet = it.next()   // 활성 펫 대신 이 펫 기준
                     case "--all": all = true
-                    case "--tiers": tiers = it.next().map(EffectImporter.parseTiers)
-                    default: url = URL(string: a)
+                    case "--tiers": tiers = it.next().map(parseTiers)
+                    default: break
                     }
                 }
-                // URL 이 없으면 활성 펫의 직업(경로) 스킬
-                var jobName: String?
                 let petId = Paths.overridePet ?? Config.load().activePet
-                if url == nil {
-                    guard let id = petId, let m = try? PetManifest.load(petId: id), let job = m.jobName else {
-                        fail("활성 펫에 직업 정보가 없습니다. effect fetch <페이지URL> 로 지정하세요.")
-                    }
-                    jobName = job
+                guard let id = petId, let m = try? PetManifest.load(petId: id), let jobName = m.jobName else {
+                    fail("활성 펫에 직업 정보가 없습니다.")
                 }
                 let sem = DispatchSemaphore(value: 0)
                 var result: Result<String?, Error>!
                 Task.detached {
                     do {
-                        let skills: [EffectImporter.Skill]
-                        if let url { skills = try await EffectImporter.listSkills(pages: [url]) }
-                        else { skills = try await JobPages.skills(forJob: jobName!) }
+                        let skills = try await SkillCatalog.load(petId: id, job: jobName) { print($0) }
                         if all || tiers != nil {
                             let picked = tiers.map { t in skills.filter { t.contains($0.tier) } } ?? skills
-                            let names = await EffectImporter.installAll(picked) { print($0) }
+                            let names = await SkillCatalog.install(picked: picked, petId: id, job: jobName) { print($0) }
                             print("\(names.count)개 설치 → \(Paths.effects.path)")
                             result = .success(nil); sem.signal(); return
                         }
                         guard let skill else {
-                            var lastTier = ""
-                            for s in skills.sorted(by: { ($0.tierOrder, $0.displayName) < ($1.tierOrder, $1.displayName) }) {
-                                if s.tier != lastTier { lastTier = s.tier; print("[\(s.tier)]") }
-                                print("  \(s.displayName)  (\(s.frames.count))")
+                            var lastTier = "", seen = Set<String>()
+                            for s in skills {
+                                if s.tier != lastTier { lastTier = s.tier; seen = []; print("[\(s.tier)]") }
+                                if seen.insert(s.name).inserted { print("  \(s.name)") }
                             }
                             result = .success(nil); sem.signal(); return
                         }
-                        guard let pick = skills.first(where: { $0.name.lowercased() == skill.lowercased() }) else {
-                            throw PetError("스킬을 찾을 수 없음: \(skill). effect fetch <URL> 로 목록 확인")
-                        }
-                        result = .success(try await EffectImporter.install(pick) { print($0) })
+                        let picked = skills.filter { $0.name.contains(skill) }
+                        guard !picked.isEmpty else { throw PetError("스킬을 찾을 수 없음: \(skill). effect fetch 로 목록 확인") }
+                        let names = await SkillCatalog.install(picked: picked, petId: id, job: jobName) { print($0) }
+                        print("\(names.count)개 조각 설치")
+                        result = .success(names.first)
                     } catch { result = .failure(error) }
                     sem.signal()
                 }
@@ -143,12 +138,6 @@ enum Main {
                     }
                 case .success(nil): break
                 case .failure(let e): fail(e.localizedDescription)
-                }
-            case "split":
-                // 디버그: 파일명 → (스킬, 변형)
-                for raw in sub.dropFirst() {
-                    let sk = EffectImporter.Skill(name: raw, frames: [], tier: "", tierOrder: 0, path: nil, pathIndex: 0)
-                    print(raw, "→", sk.split, "| display:", sk.displayName)
                 }
             case "set":
                 guard sub.count >= 3 else { fail("usage: effect set <state> <name[,name…]|none>") }
@@ -180,7 +169,7 @@ enum Main {
               pets | use <id>           설치된 펫 목록 / 선택
               hooks install|uninstall|status             Claude Code 훅 설정
               effect list               설치된 이펙트 목록
-              effect fetch [페이지URL] [--tiers 4,5,hyper | --all | --skill NAME] [--state S]   스킬 이펙트 가져오기 (URL 없으면 활성 펫 직업)
+              effect fetch [--tiers 4,5,hyper | --all | --skill 이름] [--state S]   KMS 스킬 이펙트 가져오기
               effect set <state> <name|none>              상태에 이펙트 연결
               state <name> [msg]        상태 파일 직접 쓰기 (테스트)
 
@@ -196,6 +185,16 @@ enum Main {
             app.delegate = delegate
             app.run()
         }
+    }
+
+    /// "4,5,hyper" → {"4차","5차","하이퍼"}
+    static func parseTiers(_ text: String) -> Set<String> {
+        Set(text.split(separator: ",").compactMap { raw -> String? in
+            let t = raw.trimmingCharacters(in: .whitespaces).lowercased()
+            if t.hasPrefix("hyper") || t == "하이퍼" { return "하이퍼" }
+            if let n = Int(t.replacingOccurrences(of: "차", with: "")), (1...6).contains(n) { return "\(n)차" }
+            return t.isEmpty ? nil : String(raw)
+        })
     }
 
     static func attempt(_ f: () throws -> Void) {

@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var lastFileMTime: Date?
     private var fetching = false
     private var activeManifest: PetManifest?
+    private var activePicker: SkillPicker?
     private var focusSession: String?
     private static let passThrough: Set<String> = ["done", "error", "notify"]
 
@@ -348,7 +349,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let tierMenu = NSMenu()
             let bySkill = Dictionary(grouping: byTier[tier]!, by: { $0.skillTitle })
             for skill in bySkill.keys.sorted() {
-                let pieces = bySkill[skill]!.filter { !$0.variant.lowercased().contains("summon") }.map(\.name).sorted()
+                // 소환수·타격 조각은 제외 (타격은 몬스터 자리 기준이라 캐릭터에 맞출 수 없다)
+                let pieces = bySkill[skill]!.filter {
+                    let v = $0.variant.lowercased()
+                    return !v.contains("summon") && !v.contains("소환") && !v.hasPrefix("타격") && !v.hasPrefix("몹") && !v.hasPrefix("피격")
+                }.map(\.name).sorted()
                 guard !pieces.isEmpty else { continue }
                 let value = pieces.joined(separator: ",")
                 let it = NSMenuItem(title: skill, action: action, keyEquivalent: "")
@@ -396,7 +401,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func selectAllGallery() {
         let bySkill = Dictionary(grouping: EffectInfo.all(), by: { "\($0.tierOrder)|\($0.skillTitle)" })
         bindings.gallery = bySkill.keys.sorted().compactMap { key in
-            let pieces = bySkill[key]!.filter { !$0.variant.lowercased().contains("summon") }.map(\.name).sorted()
+            let pieces = bySkill[key]!.filter {
+                let v = $0.variant.lowercased()
+                return !v.contains("summon") && !v.contains("소환") && !v.hasPrefix("타격") && !v.hasPrefix("몹") && !v.hasPrefix("피격")
+            }.map(\.name).sorted()
             return pieces.isEmpty ? nil : pieces.joined(separator: ",")
         }
         try? bindings.save(config.activePet)
@@ -420,7 +428,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 활성 펫의 직업 스킬 이펙트를 (다시) 받는다. 캐릭터 가져오기 때 자동으로도 호출.
     @objc private func fetchEffect() {
-        guard !fetching, let job = activeManifest?.jobName else { view.say("직업 정보가 없는 펫이야", seconds: 4); return }
+        if fetching { view.say("이미 받는 중이야 (잠시 후 다시)", seconds: 4); return }
+        guard let job = activeManifest?.jobName else { view.say("직업 정보가 없는 펫이야", seconds: 4); return }
         fetching = true
         Task { [weak self] in
             defer { self?.fetching = false }
@@ -429,19 +438,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func importJobSkills(_ job: String) async {
-        view.say("\(job) 스킬 목록 불러오는 중…", seconds: 30)
-        let skills: [EffectImporter.Skill]
+        view.say("\(job) 스킬 목록 불러오는 중…", seconds: 60)
+        let skills: [MapleWZ.Skill]
         do {
-            skills = try await JobPages.skills(forJob: job)
+            skills = try await SkillCatalog.load(petId: config.activePet, job: job) { [weak self] msg in
+                Task { @MainActor in self?.view.say(msg, seconds: 60) }
+            }
         } catch {
             view.say("스킬 가져오기 실패: \(error.localizedDescription)", seconds: 8); return
         }
         guard !skills.isEmpty else { view.say("\(job) 스킬을 찾지 못했어", seconds: 5); return }
         view.say("\(skills.count)개 스킬 — 받을 스킬을 골라 줘", seconds: 30)
-        guard let picked = SkillPicker(skills: skills).run(title: "\(job) 스킬 이펙트"), !picked.isEmpty else { view.say("취소", seconds: 2); return }
-        view.say("\(job) 스킬 \(picked.count)개 받는 중…", seconds: 60)
-        let names = await EffectImporter.installAll(picked) { [weak self] msg in Task { @MainActor in self?.view.say(msg, seconds: 60) } }
-        view.say("스킬 이펙트 \(names.count)개 준비 완료 · 우클릭 → 상태별 이펙트", seconds: 8)
+        let picker = SkillPicker(skills: skills)
+        activePicker = picker                       // 대화상자가 살아 있는 동안 유지
+        defer { activePicker = nil }
+        guard let picked = picker.run(title: "\(job) 스킬 이펙트"), !picked.isEmpty else { view.say("취소", seconds: 2); return }
+        view.say("\(picked.count)개 스킬 받는 중…", seconds: 60)
+        let names = await SkillCatalog.install(picked: picked, petId: config.activePet, job: job) { [weak self] msg in
+            Task { @MainActor in self?.view.say(msg, seconds: 60) }
+        }
+        // 메뉴는 스킬 단위로 묶어 보여주므로 조각 수가 아니라 스킬 수를 알려준다
+        let skillCount = Set(EffectInfo.all().filter { names.contains($0.name) }.map(\.skillTitle)).count
+        view.say("스킬 \(skillCount)개 준비 완료 · 우클릭 → 상태별 이펙트", seconds: 8)
     }
 
 

@@ -73,6 +73,29 @@ enum NexonClient {
         return obj
     }
 
+    /// 캐릭터가 배운 스킬 이름 (차수별). 5차 스킬을 골라내고 직업을 판별하는 데 쓴다.
+    static let skillGrades = ["0", "1", "2", "3", "4", "hyperpassive", "hyperactive", "5", "6"]
+
+    static func characterSkills(ocid: String, apiKey: String, grades: [String] = skillGrades,
+                                progress: (String) -> Void = { _ in }) async -> [String: [String]] {
+        var out: [String: [String]] = [:]
+        for (i, g) in grades.enumerated() {
+            progress("스킬 목록 \(i + 1)/\(grades.count)")
+            var c = URLComponents(string: "https://open.api.nexon.com/maplestory/v1/character/skill")!
+            c.queryItems = [.init(name: "ocid", value: ocid), .init(name: "character_skill_grade", value: g)]
+            for attempt in 0..<4 {   // 넥슨 초당 제한
+                if let json = try? await getJSON(c.url!, apiKey: apiKey) {
+                    let list = json["character_skill"] as? [[String: Any]] ?? []
+                    out[g] = list.compactMap { $0["skill_name"] as? String }
+                    break
+                }
+                try? await Task.sleep(nanoseconds: UInt64(800_000_000 * (attempt + 1)))
+            }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+        }
+        return out
+    }
+
     static func download(_ url: URL) async throws -> CGImage {
         var last: Error?
         for _ in 0..<3 {

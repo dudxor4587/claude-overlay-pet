@@ -4,7 +4,7 @@ import AppKit
 /// 스킬은 변형(Effect/Hit…)을 묶은 단위로 보여주고, 고르면 변형을 전부 받는다.
 @MainActor
 final class SkillPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
-    struct Group { let tier: String; let tierOrder: Int; let skill: String; let title: String; let variants: [EffectImporter.Skill] }
+    struct Group { let tier: String; let tierOrder: Int; let skill: String; let title: String; let variants: [MapleWZ.Skill] }
     private enum Row { case tier(String, Int); case group(Int) }
 
     private let groups: [Group]
@@ -15,18 +15,17 @@ final class SkillPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     private let search = NSSearchField()
     private let installed: Set<String>
 
-    init(skills: [EffectImporter.Skill]) {
-        var map: [String: [EffectImporter.Skill]] = [:]
+    init(skills: [MapleWZ.Skill]) {
+        var map: [String: [MapleWZ.Skill]] = [:]
         var order: [String] = []
         for s in skills {
-            let key = "\(s.tierOrder)|\(s.tier)|\(s.split.skill)"
+            let key = "\(s.tierOrder)|\(s.tier)|\(s.name)"
             if map[key] == nil { order.append(key) }
             map[key, default: []].append(s)
         }
         groups = order.map { key in
-            let vs = map[key]!, f = vs[0], base = f.split.skill
-            let title = base
-            return Group(tier: f.tier, tierOrder: f.tierOrder, skill: base, title: title, variants: vs)
+            let vs = map[key]!, f = vs[0]
+            return Group(tier: f.tier, tierOrder: f.tierOrder, skill: f.name, title: f.name, variants: vs)
         }.sorted { ($0.tierOrder, $0.title) < ($1.tierOrder, $1.title) }
         installed = Set(EffectInfo.all().map(\.skill))
         super.init()
@@ -49,7 +48,7 @@ final class SkillPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
     }
 
     /// 선택된 스킬(변형 포함). 취소면 nil.
-    func run(title: String) -> [EffectImporter.Skill]? {
+    func run(title: String) -> [MapleWZ.Skill]? {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = "받을 스킬을 체크하세요. 차수 줄을 누르면 그 차수 전체가 토글됩니다."
@@ -76,7 +75,14 @@ final class SkillPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
         alert.window.initialFirstResponder = search
 
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let response = alert.runModal()
+        // NSTableView 의 dataSource/delegate 는 약한 참조가 아니다.
+        // 이 객체가 먼저 해제되면 이후 이벤트에서 사라진 주소를 불러 크래시가 난다.
+        table.dataSource = nil
+        table.delegate = nil
+        table.target = nil
+        search.delegate = nil
+        guard response == .alertFirstButtonReturn else { return nil }
         return checked.sorted().flatMap { groups[$0].variants }
     }
 
@@ -96,9 +102,16 @@ final class SkillPicker: NSObject, NSTableViewDataSource, NSTableViewDelegate, N
             return cb
         case .group(let i):
             let g = groups[i]
-            let cb = NSButton(checkboxWithTitle: "    \(g.title)  · \(g.variants.count)" + (installed.contains(g.skill) ? "  ✓" : ""),
+            // 이미 "못 받는다" 고 확인된 스킬 (스킬 단위 판정)
+            // 같은 이름의 ID 하나라도 "못 받음" 이면 그 스킬은 못 받는다 (같은 이미지 파일을 쓴다)
+            // ID 전부가 불가일 때만 불가 — 부속 ID 하나가 막혀도 본체는 받아질 수 있다
+            let unavailable = g.variants.allSatisfy { MapleWZ.isBadSkill($0.id) }
+            let cb = NSButton(checkboxWithTitle: "    \(g.title)"
+                              + (installed.contains(g.skill) ? "  ✓" : "")
+                              + (unavailable ? "  (받을 수 없음)" : ""),
                               target: self, action: #selector(toggleGroup(_:)))
             cb.state = checked.contains(i) ? .on : .off
+            cb.isEnabled = !unavailable
             cb.tag = i
             return cb
         }

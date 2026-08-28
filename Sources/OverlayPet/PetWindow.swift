@@ -59,8 +59,8 @@ final class PetView: NSView {
 
     // 레이아웃: 창을 스프라이트보다 넉넉히 잡아 큰 이펙트가 잘리지 않게 한다. 투명 영역은 클릭 통과.
     static let bubbleHeight: CGFloat = 110   // 세션 4줄까지
-    static let canvasWidth: CGFloat = 520
-    static let canvasTopPad: CGFloat = 220   // 스프라이트 위 이펙트 여유
+    static let canvasWidth: CGFloat = 900
+    static let canvasTopPad: CGFloat = 420   // 스프라이트 위 이펙트 여유
     static let canvasSidePad: CGFloat = 0
     var canvasSize: CGSize {
         CGSize(width: max(spriteSize.width, Self.canvasWidth), height: spriteSize.height + Self.bubbleHeight + Self.canvasTopPad)
@@ -91,6 +91,26 @@ final class PetView: NSView {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self, userInfo: nil))
+    }
+
+    /// 창 단위 클릭 통과. 뷰의 hitTest 만으로는 이펙트가 그려진 영역에서 macOS 가 창에 이벤트를 넘겨 버리므로,
+    /// 커서가 캐릭터·말풍선 위에 있을 때만 창이 마우스를 받고 나머지는 항상 아래 창으로 통과시킨다.
+    private var mouseMonitors: [Any] = []
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        mouseMonitors.forEach(NSEvent.removeMonitor)
+        mouseMonitors = []
+        guard window != nil else { return }
+        let handler: (NSEvent) -> Void = { [weak self] _ in self?.updatePassThrough() }
+        if let g = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged], handler: handler) { mouseMonitors.append(g) }
+        if let l = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved], handler: { e in handler(e); return e }) { mouseMonitors.append(l) }
+        updatePassThrough()
+    }
+    func updatePassThrough() {
+        guard let w = window, dragOffset == nil else { return }
+        let p = convert(w.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        let over = hitTest(convert(p, to: superview)) != nil
+        if w.ignoresMouseEvents == over { w.ignoresMouseEvents = !over }
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -140,18 +160,22 @@ final class PetView: NSView {
         guard let s = sheet, let a = alpha else { return 0 }
         let w = s.image.width
         var top: Int?, bottom = 0
-        var sumX = 0, count = 0, allX = 0, allCount = 0
+        var rowMin = [Int](repeating: Int.max, count: s.frameHeight), rowMax = [Int](repeating: -1, count: s.frameHeight)
         for y in 0..<s.frameHeight {
             let rowBase = y * w
             for x in 0..<s.frameWidth where x < w && a[rowBase + x] > 8 {   // 0행 0열 프레임만
                 if top == nil { top = y }
-                if y - (top ?? y) <= 40 { sumX += x; count += 1 }
-                allX += x; allCount += 1
+                rowMin[y] = min(rowMin[y], x); rowMax[y] = max(rowMax[y], x)
                 bottom = y
             }
         }
-        headCenterX = count > 0 ? CGFloat(sumX) / CGFloat(count) : CGFloat(s.frameWidth) / 2
-        bodyCenterX = allCount > 0 ? CGFloat(allX) / CGFloat(allCount) : CGFloat(s.frameWidth) / 2
+        // 가로 중심은 발 부분(맨 아래 24px 행)의 픽셀 범위로 잡는다. 게임의 기준점도 발밑이고,
+        // 무기·망토처럼 한쪽으로 길게 뻗은 장비는 대개 바닥까지 안 내려와서 몸 중심에 가깝다.
+        var fl = Int.max, fr = -1
+        for y in max(0, bottom - 24)...max(0, bottom) where rowMax[y] >= 0 { fl = min(fl, rowMin[y]); fr = max(fr, rowMax[y]) }
+        let center = fr >= 0 ? CGFloat(fl + fr) / 2 : CGFloat(s.frameWidth) / 2
+        headCenterX = center
+        bodyCenterX = center
         footY = CGFloat(bottom + 1)
         return CGFloat(top ?? 0)
     }
@@ -236,17 +260,29 @@ final class PetView: NSView {
             p.layer.contentsRect = e.contentsRect(frame: 0)
             layer?.addSublayer(p.layer)
             players.append(p)
-            p.timer = Timer.scheduledTimer(withTimeInterval: 1 / max(1, e.manifest.fps), repeats: true) { [weak self, weak p] _ in
-                guard let self, let p else { return }
-                p.frame += 1
-                if p.frame >= e.manifest.frames {
-                    if e.manifest.loop { p.frame = 0 } else { self.players.removeAll { $0 === p }; return }
-                }
-                p.layer.contentsRect = e.contentsRect(frame: p.frame)
-            }
-            RunLoop.main.add(p.timer!, forMode: .common)
+            scheduleNextFrame(p)
         }
         layoutEffect()
+    }
+
+    /// WZ 의 프레임별 delay(ms)를 그대로 쓴다. 없으면 fps 로 균등.
+    private func scheduleNextFrame(_ p: EffectPlayer) {
+        let m = p.effect.manifest
+        let interval: TimeInterval
+        if let d = m.delays, p.frame < d.count { interval = Double(d[p.frame]) / 1000 }
+        else { interval = 1 / max(1, m.fps) }
+        p.timer?.invalidate()
+        let t = Timer.scheduledTimer(withTimeInterval: max(0.016, interval), repeats: false) { [weak self, weak p] _ in
+            guard let self, let p else { return }
+            p.frame += 1
+            if p.frame >= m.frames {
+                if m.loop { p.frame = 0 } else { self.players.removeAll { $0 === p }; return }
+            }
+            p.layer.contentsRect = p.effect.contentsRect(frame: p.frame)
+            self.scheduleNextFrame(p)
+        }
+        p.timer = t
+        RunLoop.main.add(t, forMode: .common)
     }
 
     private func layoutEffect() {
@@ -259,8 +295,16 @@ final class PetView: NSView {
             let sp = spriteLayer.frame
             let cx = sp.minX + bodyCenterX * scale + (CGFloat(m.offsetX) + p.offsetX) * scale
             let feet = sp.minY + footY * scale
-            let y: CGFloat = m.anchor == "bottom" ? feet - h : (sp.minY + headInset * scale + feet) / 2 - h / 2
-            p.layer.frame = CGRect(x: cx - w / 2, y: y - CGFloat(m.offsetY) * scale, width: w, height: h)
+            if let ax = m.anchorX, let ay = m.anchorY {
+                // WZ origin 기준: 기준점이 캐릭터 발밑 중앙에 오도록
+                let k = w / max(1, CGFloat(m.frameWidth) * scale * CGFloat(m.scale))   // 창 맞춤 축소 반영
+                p.layer.frame = CGRect(x: cx - CGFloat(ax) * scale * CGFloat(m.scale) * k,
+                                       y: feet - CGFloat(ay) * scale * CGFloat(m.scale) * k - CGFloat(m.offsetY) * scale,
+                                       width: w, height: h)
+            } else {
+                let y: CGFloat = m.anchor == "bottom" ? feet - h : (sp.minY + headInset * scale + feet) / 2 - h / 2
+                p.layer.frame = CGRect(x: cx - w / 2, y: y - CGFloat(m.offsetY) * scale, width: w, height: h)
+            }
         }
     }
 
@@ -296,7 +340,11 @@ final class PetView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let p = convert(point, from: superview)
-        if !bubble.isHidden, bubble.frame.contains(p) { return self }
+        // 말풍선은 실제로 그려진 박스만 클릭을 잡는다 (프레임 전체를 잡으면 화면 한 줄이 먹통이 된다)
+        if !bubble.isHidden {
+            let box = bubble.convert(bubble.drawnBox, to: self)
+            if box.contains(p) { return self }
+        }
         return spriteAlpha(at: p) > 8 ? self : nil
     }
 
@@ -328,11 +376,13 @@ final class PetView: NSView {
 /// 둥근 말풍선. 시스템 알림 권한 없이 진행 상황을 보여준다. 여러 줄이면 세션 목록.
 final class BubbleView: NSView {
     var lines: [String] = [] { didSet { needsDisplay = true } }
+    /// 마지막으로 그린 말풍선 박스 (클릭 판정용)
+    private(set) var drawnBox: NSRect = .zero
     override var isFlipped: Bool { true }
 
 
     override func draw(_ dirtyRect: NSRect) {
-        guard !lines.isEmpty else { return }
+        guard !lines.isEmpty else { drawnBox = .zero; return }
         let text = lines.joined(separator: "\n")
         let para = NSMutableParagraphStyle(); para.alignment = lines.count > 1 ? .left : .center; para.lineBreakMode = .byTruncatingTail
         let attrs: [NSAttributedString.Key: Any] = [
@@ -343,6 +393,7 @@ final class BubbleView: NSView {
         let size = (text as NSString).boundingRect(with: NSSize(width: maxW - 20, height: bounds.height - 24), options: [.usesLineFragmentOrigin], attributes: attrs).size
         let w = min(maxW, size.width + 24), h = min(bounds.height - 12, size.height + 14)
         let box = NSRect(x: (bounds.width - w) / 2, y: bounds.height - h - 16, width: w, height: h)
+        drawnBox = box
         let path = NSBezierPath(roundedRect: box, xRadius: 10, yRadius: 10)
         // 꼬리
         path.move(to: NSPoint(x: box.midX - 6, y: box.maxY))
