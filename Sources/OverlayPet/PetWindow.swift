@@ -187,7 +187,16 @@ final class PetView: NSView {
         headCenterX = center
         bodyCenterX = center
         footY = CGFloat(bottom + 1)
-        return CGFloat(top ?? 0)
+
+        // 말풍선은 머리 위에 붙는다. 프레임 0 만 재면 더 높이 올라가는 프레임이 말풍선을 뚫는다
+        // (GIF 펫은 프레임마다 피사체 높이가 다르다). 서기 행 전체에서 가장 높은 지점을 쓴다.
+        var highest = top ?? 0
+        let strip = min(w, s.frameWidth * max(1, s.frameCounts.first ?? 1))
+        scan: for y in 0..<highest {
+            let rowBase = y * w
+            for x in 0..<strip where a[rowBase + x] > 8 { highest = y; break scan }
+        }
+        return CGFloat(highest)
     }
 
     override func layout() {

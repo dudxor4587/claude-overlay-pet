@@ -510,12 +510,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.forcePassThrough = false
         guard let (petName, files) = result, !(files.isEmpty && petId == nil) else { return }
 
+        // '평소' 에 정지 사진을 넣으면 그 사진으로 상태를 전부 만들 수 있다.
+        // 이미 다른 상태가 있는 펫이면 물어본다 — 평소만 바꾸면 나머지는 옛 그림으로 남아 둘이 섞여 보인다.
+        let stillPhoto = files["idle"].flatMap { (try? CustomPet.frames(of: $0))?.count == 1 } ?? false
+        var regenerate = stillPhoto
+        if stillPhoto, existing.count > 1 {
+            let ask = NSAlert()
+            ask.messageText = "이 사진으로 펫 전체를 다시 만들까요?"
+            ask.informativeText = """
+            생각 중·명령 실행 중 같은 나머지 상태도 새 사진으로 만듭니다.
+            '평소만 바꾸기' 를 고르면 나머지 상태는 이전 그림 그대로 남아, 두 그림이 섞여 보입니다.
+            """
+            ask.addButton(withTitle: "전체 다시 만들기")
+            ask.addButton(withTitle: "평소만 바꾸기")
+            ask.addButton(withTitle: "취소")
+            view.forcePassThrough = true
+            NSApp.activate(ignoringOtherApps: true)
+            let answer = ask.runModal()
+            view.forcePassThrough = false
+            guard answer != .alertThirdButtonReturn else { return }
+            regenerate = answer == .alertFirstButtonReturn
+        }
+        let regenerateAll = regenerate
+
         fetching = true
         Task.detached { [weak self] in
             do {
                 var anims = existing
                 for (state, url) in files {
-                    anims[state] = CustomPet.sample(try CustomPet.frames(of: url))
+                    anims[state] = try CustomPet.readFrames(url)      // 배경도 여기서 지운다
+                }
+                // 전체 다시 만들기: 사진으로 상태를 다 만든 뒤, 이번에 직접 고른 다른 상태만 그 위에 덮는다.
+                if regenerateAll, let still = anims["idle"], still.count == 1 {
+                    anims = try ImagePet.animations(from: still[0])
+                    for (state, url) in files where state != "idle" {
+                        anims[state] = try CustomPet.readFrames(url)
+                    }
                 }
                 let id = try CustomPet.build(anims: anims, name: petName)
                 await MainActor.run { [weak self] in
@@ -523,7 +553,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.config.activePet = id
                     try? self.config.save()
                     self.loadActivePet()
-                    self.view.say("\(petName) 등장!", seconds: 4)
                     self.view.play(state: "start", force: true)
                 }
             } catch {
@@ -576,7 +605,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.config.activePet = id
                 try? self?.config.save()
                 self?.loadActivePet()
-                self?.view.say("\(charName) 등장!", seconds: 4)
                 self?.view.play(state: "start", force: true)
                 if let job = self?.activeManifest?.jobName { await self?.importJobSkills(job) }
             } catch {

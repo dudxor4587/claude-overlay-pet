@@ -123,7 +123,14 @@ enum CustomPet {
             throw PetError("경로를 읽을 수 없음: \(source.path)")
         }
         if !isDir.boolValue {
-            return ["idle": sample(try frames(of: source))]
+            let fs = try frames(of: source)
+            // 정지 사진 한 장이면 그대로 두면 안 움직이는 펫이 된다. 그 사진으로 상태별 움직임을 만든다.
+            // 여러 프레임짜리 GIF 는 넣은 그대로 idle 로 쓴다.
+            if fs.count == 1, let still = fs.first {
+                return try ImagePet.animations(from: still)
+            }
+            // 배경이 있는 GIF(영상 변환 등)는 배경을 지운다. 프레임을 먼저 솎아 Vision 호출을 줄인다.
+            return ["idle": try ImagePet.prepare(frames: sample(fs))]
         }
         let files = ((try? FileManager.default.contentsOfDirectory(at: source, includingPropertiesForKeys: nil)) ?? [])
             .filter { ["gif", "png", "apng", "webp", "jpg", "jpeg"].contains($0.pathExtension.lowercased()) }
@@ -145,9 +152,17 @@ enum CustomPet {
             for (_, url) in members.sorted(by: { $0.0 < $1.0 }) {
                 fs.append(contentsOf: try frames(of: url))
             }
-            if !fs.isEmpty { anims[key] = sample(fs) }
+            if !fs.isEmpty { anims[key] = try ImagePet.prepare(frames: sample(fs)) }
         }
         return anims
+    }
+
+    /// 파일 하나 → 바로 쓸 수 있는 프레임들. 프레임을 솎고 배경을 지운다.
+    /// 이미 투명한 에셋은 건드리지 않으므로 직접 그린 그림에는 영향이 없다.
+    static func readFrames(_ url: URL) throws -> [CGImage] {
+        let fs = sample(try frames(of: url))
+        if fs.count == 1, let still = fs.first { return [try ImagePet.prepare(still)] }
+        return try ImagePet.prepare(frames: fs)
     }
 
     /// 한 파일의 프레임들 (GIF·APNG 는 전체, 정지 이미지는 한 장)

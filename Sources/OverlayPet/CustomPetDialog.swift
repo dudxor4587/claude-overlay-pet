@@ -27,7 +27,23 @@ final class CustomPetDialog: NSObject {
     func run(title: String, name: String) -> (name: String, files: [String: URL])? {
         let alert = NSAlert()
         alert.messageText = title
-        alert.informativeText = "상태별로 GIF(애니메이션)나 PNG 파일을 선택합니다. 비워둔 상태는 '평소' 모습으로 재생됩니다.\n캐릭터는 오른쪽을 보게 그려져 있으면 좋습니다."
+        alert.informativeText = existing.isEmpty ? """
+        '평소' 하나만 채우면 됩니다. 비워둔 상태는 평소 모습으로 재생됩니다.
+
+        · 사진 1장(JPG·PNG) — 배경을 지우고 8가지 상태 움직임을 자동으로 만듭니다
+        · GIF — 그 움직임을 그대로 씁니다 (배경이 있으면 지웁니다)
+
+        배경이 이미 투명한 파일은 손대지 않습니다. 긴 GIF 는 전체에서 16프레임을 고르게 뽑아 씁니다.
+        캐릭터가 오른쪽을 보고 있으면 자연스럽습니다.
+        """ : """
+        이미 있는 상태는 '유지' 로 표시됩니다. 파일을 고른 상태만 교체됩니다.
+
+        · 사진 1장(JPG·PNG) — 배경을 지웁니다. '평소' 에 넣으면 나머지 상태도 그 사진으로
+          다시 만들지 물어봅니다
+        · GIF — 그 움직임을 그대로 씁니다 (배경이 있으면 지웁니다)
+
+        배경이 이미 투명한 파일은 손대지 않습니다. 긴 GIF 는 전체에서 16프레임을 고르게 뽑아 씁니다.
+        """
         let ok = alert.addButton(withTitle: existing.isEmpty ? "만들기" : "저장")
         alert.addButton(withTitle: "취소")
         okButton = ok
