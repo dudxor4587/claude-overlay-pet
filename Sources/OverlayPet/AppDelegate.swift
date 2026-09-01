@@ -114,6 +114,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: 상태 파일 감시
 
+    /// 메뉴에서 고른 고정 상태. 있으면 훅이 와도 애니메이션을 바꾸지 않고 자동으로 잠들지도 않는다.
+    /// 말풍선·세션 패널·이펙트는 그대로 둔다. 앱을 껐다 켜면 풀린다 (일부러 저장하지 않는다).
+    private var pinnedState: String?
+
     private var lastConfigMTime: Date?
     private var lastGalleryAt: TimeInterval = 0
     private var galleryIndex = 0
@@ -144,7 +148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if !sessions.isEmpty, Int(Date().timeIntervalSince1970) % 10 == 0 {
             refreshStatus()
         } else if let s = PetStateFile.read(), view.currentState != "sleep", view.currentState != "end",
-                  Date().timeIntervalSince1970 - s.ts > config.sleepAfterSeconds {
+                  Date().timeIntervalSince1970 - s.ts > config.sleepAfterSeconds, pinnedState == nil {
             view.play(state: "sleep")
         }
     }
@@ -153,16 +157,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private struct Session { var cwd: String; var state: String; var message: String?; var ts: Double }
     private var sessions: [String: Session] = [:]
 
+    /// 훅이 부르는 애니메이션 변경. 고정 중에는 무시한다.
+    private func showState(_ name: String, force: Bool = false, once: Bool = false) {
+        guard pinnedState == nil else { return }
+        if once { view.playOnce(state: name) } else { view.play(state: name, force: force) }
+    }
+
     private func applyState(_ s: PetStateFile?, initial: Bool) {
-        guard let s else { view.play(state: "idle"); return }
+        guard let s else { showState("idle"); return }
         let stale = Date().timeIntervalSince1970 - s.ts > config.sleepAfterSeconds
-        if stale { view.play(state: s.state == "end" ? "end" : "sleep"); return }
+        if stale { showState(s.state == "end" ? "end" : "sleep"); return }
         let isNew = !initial && s.ts != lastStateTS
         lastStateTS = s.ts
 
         guard let sid = s.sessionId else {
             // 세션 정보 없는 수동 이벤트 (state 커맨드 등)
-            view.play(state: s.state, force: !initial)
+            showState(s.state, force: !initial)
             if isNew { view.say(s.message ?? AnimationMap.bubbleText[s.state] ?? s.state, seconds: config.bubbleSeconds) }
             return
         }
@@ -177,10 +187,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 포커스: 마지막으로 프롬프트를 친 세션. 애니메이션은 포커스 세션을 따라간다.
         if s.state == "prompt" || s.state == "start" || focusSession == nil { focusSession = sid }
         if sid == focusSession {
-            view.play(state: s.state, force: !initial)
+            showState(s.state, force: !initial)
             if isNew { view.playEffects(effects(for: s.state)) }
         } else if isNew, Self.passThrough.contains(s.state) {
-            view.playOnce(state: s.state)   // 다른 세션의 완료·실패·알림은 1회만
+            showState(s.state, once: true)   // 다른 세션의 완료·실패·알림은 1회만
             view.playEffects(effects(for: s.state))
         }
         refreshStatus()
@@ -300,14 +310,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         login.isEnabled = Bundle.main.bundleIdentifier != nil
         menu.addItem(login)
 
-        let test = NSMenuItem(title: "상태 테스트", action: nil, keyEquivalent: "")
-        let tsub = NSMenu()
-        for s in ["start", "prompt", "bash", "edit", "notify", "error", "done", "end", "sleep", "idle"] {
-            let it = NSMenuItem(title: s, action: #selector(testState(_:)), keyEquivalent: "")
-            it.target = self; it.representedObject = s; tsub.addItem(it)
+        // 상태 고정 — Claude 를 안 쓰는 동안에도 원하는 모습으로 세워 둔다
+        let pin = NSMenuItem(title: "상태 고정" + (pinnedState.map { " · \(Self.pinLabel($0))" } ?? ""),
+                             action: nil, keyEquivalent: "")
+        let psub = NSMenu()
+        let release = NSMenuItem(title: "해제 (Claude 따라가기)", action: #selector(setPinned(_:)), keyEquivalent: "")
+        release.target = self; release.representedObject = ""
+        release.state = pinnedState == nil ? .on : .off
+        psub.addItem(release)
+        psub.addItem(.separator())
+        for s in Self.pinnableStates {
+            let it = NSMenuItem(title: Self.pinLabel(s), action: #selector(setPinned(_:)), keyEquivalent: "")
+            it.target = self; it.representedObject = s
+            it.state = pinnedState == s ? .on : .off
+            psub.addItem(it)
         }
-        test.submenu = tsub
-        menu.addItem(test)
+        pin.submenu = psub
+        menu.addItem(pin)
 
         menu.addItem(withTitle: "데이터 폴더 열기", action: #selector(openFolder), keyEquivalent: "").target = self
         menu.addItem(.separator())
@@ -335,9 +354,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } catch { view.say("로그인 항목 변경 실패: \(error.localizedDescription)", seconds: 6) }
     }
 
-    @objc private func testState(_ sender: NSMenuItem) {
+    /// 고정할 수 있는 상태와 메뉴에 쓸 이름
+    static let pinnableStates = ["idle", "think", "bash", "edit", "done", "notify", "error", "sleep"]
+    static func pinLabel(_ s: String) -> String {
+        ["idle": "평소", "think": "생각 중", "bash": "명령 실행 중", "edit": "파일 수정 중",
+         "done": "축하 (점프)", "notify": "손 흔들기", "error": "실패 (유령)", "sleep": "잠"][s] ?? s
+    }
+
+    @objc private func setPinned(_ sender: NSMenuItem) {
         guard let s = sender.representedObject as? String else { return }
-        try? PetStateFile(state: s, tool: nil, message: nil, cwd: nil, name: nil, sessionId: nil, ts: Date().timeIntervalSince1970).write()
+        pinnedState = s.isEmpty ? nil : s
+        guard let state = pinnedState else {
+            applyState(PetStateFile.read(), initial: true)   // 훅이 남긴 마지막 상태로 복귀
+            return
+        }
+        // once: false 로 넘겨 한 번 하고 마는 동작(점프·손 흔들기)도 계속 반복시킨다
+        view.play(state: state, force: true, once: false, then: nil)
+        view.playEffects(effects(for: state))                // 연결된 이펙트가 있으면 한 번 보여준다
     }
 
     @objc private func openFolder() { NSWorkspace.shared.open(Paths.root) }
