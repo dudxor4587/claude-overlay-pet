@@ -18,6 +18,8 @@ struct PetManifest: Codable {
     /// 넥슨 직업명 (이펙트 페이지 자동 선택용). 없으면 description "월드 · 직업 · Lv" 에서 추출.
     var job: String?
     var ocid: String?
+    /// 커스텀 펫: 사용자가 실제로 넣은 상태들 (수정 대화상자가 유지분을 알기 위해)
+    var customStates: [String]?
     /// 넥슨 API 에서 이 펫 데이터를 받은 시각 (epoch 초).
     /// 메이플스토리 Open API 고지: "API를 통해 데이터를 크롤링한 경우 30일 이내에 갱신해야 할 의무가 있습니다."
     /// 없으면(구버전 펫) 알 수 없음 → 갱신 대상으로 본다.

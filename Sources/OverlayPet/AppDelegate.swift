@@ -64,7 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 막힌 서버를 계속 두드리지 않기 위해서다.
     private func refreshStaleNexonDataIfNeeded() {
         guard let id = config.activePet, id != DefaultPet.id,
-              let m = activeManifest, m.isStale,
+              let m = activeManifest, m.ocid != nil, m.isStale,   // 커스텀 펫(ocid 없음)은 넥슨 갱신 대상이 아니다
               let key = APIKey.resolve(), !key.isEmpty else { return }
         let name = m.displayName
         view.say("캐릭터 정보 갱신 중…", seconds: 4)
@@ -202,6 +202,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showMenu(_ event: NSEvent) {
         let menu = NSMenu()
         menu.addItem(withTitle: "캐릭터 가져오기…", action: #selector(fetchCharacter), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "커스텀 펫 만들기…", action: #selector(createCustomPet), keyEquivalent: "").target = self
+        if let m = activeManifest, m.customStates != nil {
+            menu.addItem(withTitle: "커스텀 펫 수정…", action: #selector(editCustomPet), keyEquivalent: "").target = self
+        }
 
         let pets = Pets.installed()
         if !pets.isEmpty {
@@ -487,6 +491,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.say("스킬 \(skillCount)개 준비 완료 · 우클릭 → 상태별 이펙트", seconds: 8)
     }
 
+
+    // MARK: 커스텀 펫
+
+    /// 상태별 파일을 골라 커스텀 펫을 만든다. idle 만 필수.
+    @objc private func createCustomPet() { runCustomPetDialog(editing: nil) }
+
+    /// 활성 커스텀 펫에 상태를 추가하거나 교체한다.
+    @objc private func editCustomPet() { runCustomPetDialog(editing: config.activePet) }
+
+    private func runCustomPetDialog(editing petId: String?) {
+        guard !fetching else { return }
+        let existing: [String: [CGImage]] = petId.flatMap { try? CustomPet.extract(petId: $0) } ?? [:]
+        let dialog = CustomPetDialog(existing: Set(existing.keys))
+        view.forcePassThrough = true
+        let result = dialog.run(title: petId == nil ? "커스텀 펫 만들기" : "커스텀 펫 수정",
+                                name: petId.flatMap { try? PetManifest.load(petId: $0).displayName } ?? "")
+        view.forcePassThrough = false
+        guard let (petName, files) = result, !(files.isEmpty && petId == nil) else { return }
+
+        fetching = true
+        Task.detached { [weak self] in
+            do {
+                var anims = existing
+                for (state, url) in files {
+                    anims[state] = CustomPet.sample(try CustomPet.frames(of: url))
+                }
+                let id = try CustomPet.build(anims: anims, name: petName)
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.config.activePet = id
+                    try? self.config.save()
+                    self.loadActivePet()
+                    self.view.say("\(petName) 등장!", seconds: 4)
+                    self.view.play(state: "start", force: true)
+                }
+            } catch {
+                await MainActor.run { [weak self] in self?.view.say("실패: \(error.localizedDescription)", seconds: 8) }
+            }
+            await MainActor.run { [weak self] in self?.fetching = false }
+        }
+    }
 
     // MARK: 캐릭터 가져오기 (앱 내장 fetcher)
 

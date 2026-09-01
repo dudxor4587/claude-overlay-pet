@@ -57,6 +57,25 @@ enum Main {
                 print("→ \(Paths.petDirectory(id).path)")
             case .failure(let e): fail(e.localizedDescription)
             }
+        case "custom":
+            // custom <파일|폴더> [--name 이름] [--no-use]
+            var src: String?, cname: String?, cuse = true
+            var cit = args.dropFirst().makeIterator()
+            while let a = cit.next() {
+                switch a {
+                case "--name": cname = cit.next()
+                case "--no-use": cuse = false
+                default: src = a
+                }
+            }
+            guard let src else { fail("usage: custom <GIF파일|에셋폴더> [--name 이름] [--no-use]") }
+            let url = URL(fileURLWithPath: (src as NSString).expandingTildeInPath)
+            let petName = cname ?? url.deletingPathExtension().lastPathComponent
+            attempt {
+                let id = try CustomPet.build(source: url, name: petName) { print($0) }
+                if cuse { var cfg = Config.load(); cfg.activePet = id; try cfg.save() }
+                print("→ \(Paths.petDirectory(id).path)")
+            }
         case "pets":
             let active = Config.load().activePet
             for p in Pets.installed() { print((p == active ? "* " : "  ") + p) }
