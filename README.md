@@ -14,11 +14,17 @@ Claude Code 작업 상태를 보여주는 macOS 데스크톱 펫. 투명 오버�
 
 ## 설치
 
+[Releases](https://github.com/dudxor4587/claude-overlay-pet/releases)에서 zip을 받아 풀고 `OverlayPet.app`을 `응용 프로그램`에 넣습니다. 서명이 없어 처음 실행 때 경고가 뜨면 **우클릭 → 열기**로 한 번만 허용하면 됩니다.
+
+소스에서 직접 빌드할 수도 있습니다:
+
 ```sh
 ./scripts/build-app.sh                     # Xcode 없이 CLT만으로 빌드 (macOS 13+)
 cp -R build/OverlayPet.app /Applications/
 open /Applications/OverlayPet.app
 ```
+
+릴리즈 만들기(관리자용): `./scripts/release.sh <버전>` — 태그 생성·푸시, 빌드, 에셋 미포함 검사, zip, GitHub Release 생성까지 한 번에.
 
 ## 사용
 
