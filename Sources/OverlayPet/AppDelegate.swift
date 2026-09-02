@@ -36,10 +36,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             try? self.config.save()
         }
         view.onRightClick = { [weak self] e in self?.showMenu(e) }
-        view.onHover = { [weak self] in
-            guard let self, !["sleep", "end"].contains(self.view.currentState) else { return }
-            self.view.playOnce(state: "notify")   // 손 흔들기
-        }
         window.orderFrontRegardless()
 
         if config.activePet == nil || !Pets.installed().contains(config.activePet!) {
@@ -98,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let (manifest, sheet) = try SpriteSheet.load(petId: id)
             activeManifest = manifest
             bindings = PetBindings.load(id)
-            view.setSheet(sheet)
+            view.setSheet(sheet, custom: manifest.customStates != nil)
             resizeWindow()
         } catch {
             view.setSheet(nil)

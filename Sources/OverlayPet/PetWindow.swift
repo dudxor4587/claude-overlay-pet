@@ -14,7 +14,7 @@ final class PetWindow: NSWindow {
         ignoresMouseEvents = false
         isReleasedWhenClosed = false
         hidesOnDeactivate = false
-        acceptsMouseMovedEvents = true   // 호버 감지
+        acceptsMouseMovedEvents = true   // 클릭 통과 판정이 mouseMoved 를 받아야 한다
     }
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -54,9 +54,6 @@ final class PetView: NSView {
     private var dragOffset: NSPoint?
     var onMoved: ((NSPoint) -> Void)?
     var onRightClick: ((NSEvent) -> Void)?
-    var onHover: (() -> Void)?
-    private var hovering = false
-    private var lastHover: TimeInterval = 0
 
     // 레이아웃: 창을 스프라이트보다 넉넉히 잡아 큰 이펙트가 잘리지 않게 한다. 투명 영역은 클릭 통과.
     static let bubbleHeight: CGFloat = 110   // 세션 4줄까지
@@ -88,6 +85,7 @@ final class PetView: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// 트래킹 영역이 있어야 커서가 창 위에 있을 때 mouseMoved 가 돈다 — 클릭 통과 판정이 여기 기댄다.
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
@@ -123,17 +121,6 @@ final class PetView: NSView {
         if w.ignoresMouseEvents == over { w.ignoresMouseEvents = !over }
     }
 
-    override func mouseMoved(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        let over = spriteAlpha(at: p) > 8
-        if over && !hovering, Date().timeIntervalSince1970 - lastHover > 2.5 {
-            lastHover = Date().timeIntervalSince1970
-            onHover?()
-        }
-        hovering = over
-    }
-    override func mouseExited(with event: NSEvent) { hovering = false }
-
     /// 이펙트가 재생 중이거나 예약돼 있으면 true (갤러리가 겹치지 않게)
     var isPlayingEffects: Bool { !players.isEmpty || pendingCount > 0 }
     private var pendingCount = 0
@@ -147,27 +134,41 @@ final class PetView: NSView {
         needsLayout = true
     }
 
-    /// 서기(0행) 프레임에서 머리 꼭대기까지의 셀 안 여백(픽셀). 말풍선을 머리 바로 위에 붙이기 위해.
-    private var headInset: CGFloat = 0
+    /// 행마다 "머리 꼭대기까지의 셀 안 여백"(픽셀). 말풍선을 머리 바로 위에 붙이기 위해 쓴다.
+    /// 상태별로 다른 GIF 를 넣은 커스텀 펫은 행마다 키가 크게 달라서, 한 행만 재면 말풍선이 어긋난다.
+    private var headInsets: [CGFloat] = []
+    /// 지금 재생 중인 행의 여백
+    private var headInset: CGFloat {
+        headInsets.indices.contains(spec.row) ? headInsets[spec.row] : (headInsets.first ?? 0)
+    }
 
-    func setSheet(_ sheet: SpriteSheet?) {
+    func setSheet(_ sheet: SpriteSheet?, custom: Bool = false) {
         self.sheet = sheet
+        customSheet = custom
         alpha = sheet.flatMap { Raster.alphaMask($0.image) }
         spriteLayer.contents = sheet?.image
-        headInset = measureHeadInset()
+        measureRowInsets()
         needsLayout = true
         play(state: currentState, force: true)
     }
 
-    /// 머리 부분(꼭대기부터 40px)의 가로 중심. 무기·이펙트로 전체 폭이 치우쳐도 머리 위에 말풍선이 오게.
-    private var headCenterX: CGFloat = 96
+    /// 행마다 말풍선을 붙일 가로 중심.
+    /// 메이플 펫은 발 기준 하나로 — 무기·망토가 옆으로 뻗어도 발은 몸 중심에 가깝다.
+    /// 커스텀 펫은 그 행 그림의 가로 중심 — 사진·GIF 에는 "발" 이라는 개념이 없다.
+    private var headCenters: [CGFloat] = []
+    private var headCenterX: CGFloat {
+        headCenters.indices.contains(spec.row) ? headCenters[spec.row]
+            : (headCenters.first ?? CGFloat(sheet?.frameWidth ?? 192) / 2)
+    }
+    /// 커스텀 펫(사진·GIF)인지 — 가로 중심 기준이 달라진다
+    private var customSheet = false
 
     /// 발 위치(셀 안 y)와 몸통 가로 중심 — 이펙트 정렬용
     private var footY: CGFloat = 188
     private var bodyCenterX: CGFloat = 96
 
-    private func measureHeadInset() -> CGFloat {
-        guard let s = sheet, let a = alpha else { return 0 }
+    private func measureRowInsets() {
+        guard let s = sheet, let a = alpha else { headInsets = []; return }
         let w = s.image.width
         var top: Int?, bottom = 0
         var rowMin = [Int](repeating: Int.max, count: s.frameHeight), rowMax = [Int](repeating: -1, count: s.frameHeight)
@@ -184,19 +185,40 @@ final class PetView: NSView {
         var fl = Int.max, fr = -1
         for y in max(0, bottom - 24)...max(0, bottom) where rowMax[y] >= 0 { fl = min(fl, rowMin[y]); fr = max(fr, rowMax[y]) }
         let center = fr >= 0 ? CGFloat(fl + fr) / 2 : CGFloat(s.frameWidth) / 2
-        headCenterX = center
         bodyCenterX = center
         footY = CGFloat(bottom + 1)
 
-        // 말풍선은 머리 위에 붙는다. 프레임 0 만 재면 더 높이 올라가는 프레임이 말풍선을 뚫는다
-        // (GIF 펫은 프레임마다 피사체 높이가 다르다). 서기 행 전체에서 가장 높은 지점을 쓴다.
-        var highest = top ?? 0
-        let strip = min(w, s.frameWidth * max(1, s.frameCounts.first ?? 1))
-        scan: for y in 0..<highest {
-            let rowBase = y * w
-            for x in 0..<strip where a[rowBase + x] > 8 { highest = y; break scan }
+        // 행마다 그 행의 모든 프레임을 훑어 가장 높은 지점을 찾는다.
+        // 프레임 0 만 재면 더 높이 올라가는 프레임이 말풍선을 뚫는다.
+        func topOfRow(_ r: Int) -> CGFloat {
+            let cols = max(1, r < s.frameCounts.count ? s.frameCounts[r] : 1)
+            let strip = min(w, s.frameWidth * cols)
+            for y in 0..<s.frameHeight {
+                let base = (r * s.frameHeight + y) * w
+                for x in 0..<strip where base + x < a.count && a[base + x] > 8 { return CGFloat(y) }
+            }
+            return CGFloat(s.frameHeight)
         }
-        return CGFloat(highest)
+        headInsets = (0..<s.rows).map(topOfRow)
+
+        // 커스텀 펫은 행마다 그림이 달라 가로 중심도 행별로 잡는다.
+        // 한 행의 모든 프레임을 셀 안 좌표로 합쳐, 움직임까지 아우르는 가운데를 쓴다.
+        func centerOfRow(_ r: Int) -> CGFloat {
+            let cols = max(1, r < s.frameCounts.count ? s.frameCounts[r] : 1)
+            var left = Int.max, right = -1
+            for y in 0..<s.frameHeight {
+                let rowBase = (r * s.frameHeight + y) * w
+                for c in 0..<cols {
+                    let x0 = c * s.frameWidth
+                    for x in 0..<s.frameWidth where x0 + x < w && a[rowBase + x0 + x] > 8 {
+                        if x < left { left = x }
+                        if x > right { right = x }
+                    }
+                }
+            }
+            return right >= left ? CGFloat(left + right) / 2 : CGFloat(s.frameWidth) / 2
+        }
+        headCenters = (0..<s.rows).map { customSheet ? centerOfRow($0) : center }
     }
 
     override func layout() {
@@ -220,6 +242,7 @@ final class PetView: NSView {
         interruptedState = back
     }
     private var interruptedState: String?
+    private var previousRow = -1
 
     func play(state: String, force: Bool = false, once: Bool? = nil, then: String? = nil) {
         guard force || state != currentState else { return }
@@ -228,6 +251,7 @@ final class PetView: NSView {
         spec = animSpecs[state] ?? animSpecs["idle"] ?? AnimationSpec(row: 0)
         if let once { spec.once = once; spec.then = then }
         if let s = sheet, spec.row >= s.rows { spec.row = 0 }
+        if spec.row != previousRow { previousRow = spec.row; needsLayout = true }   // 행마다 머리 높이가 달라 말풍선을 다시 앉힌다
         frameIndex = 0
         timer?.invalidate()
         drawFrame()
