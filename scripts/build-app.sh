@@ -6,11 +6,14 @@ cd "$(dirname "$0")/.."
 swift build -c release 2>&1 | tail -3
 BIN="$(swift build -c release --show-bin-path)/OverlayPet"
 
+# 버전: 태그 기준 (예: v0.2.0, v0.2.0-3-g1a2b3c4 = 태그 뒤 3커밋)
+VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+
 APP="build/OverlayPet.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/OverlayPet"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -19,7 +22,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleDisplayName</key><string>OverlayPet</string>
   <key>CFBundleIdentifier</key><string>dev.local.overlaypet</string>
   <key>CFBundleVersion</key><string>1</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>OverlayPet</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>

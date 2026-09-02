@@ -326,6 +326,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(withTitle: "데이터 폴더 열기", action: #selector(openFolder), keyEquivalent: "").target = self
         menu.addItem(.separator())
+        let ver = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        menu.addItem(withTitle: "OverlayPet \(ver ?? "dev")", action: nil, keyEquivalent: "")
         menu.addItem(withTitle: "종료", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q")
         NSMenu.popUpContextMenu(menu, with: event, for: view)
     }
