@@ -42,12 +42,6 @@ enum CustomPet {
             throw PetError("애니메이션을 찾지 못했어 — idle.gif 나 PNG 를 넣어 줘")
         }
 
-        // 셀 크기: 모든 프레임을 담는 최소 크기 (상한 넘으면 축소)
-        let all = anims.values.flatMap { $0 }
-        let maxW = CGFloat(all.map(\.width).max() ?? 1), maxH = CGFloat(all.map(\.height).max() ?? 1)
-        let shrink = min(1, maxCellSide / max(maxW, maxH))
-        let cellW = max(1, Int((maxW * shrink).rounded(.up))), cellH = max(1, Int((maxH * shrink).rounded(.up)))
-
         // 행 구성: 규약 이름이 있으면 그 애니메이션, 없으면 idle
         let rows: [[CGImage]] = rowSources.map { keys in
             for k in keys { if let a = anims[k] { return a } }
@@ -55,17 +49,34 @@ enum CustomPet {
         }
         let columns = rows.map(\.count).max() ?? 1
 
+        // 축소는 **상한을 넘는 행만** 그 행만큼. 모두에 같은 배율을 걸면 이미 줄어든 상태가
+        // 수정할 때마다 또 줄어든다 — 큰 GIF 를 다시 등록할 때마다 평소가 23% 씩 작아지던 원인.
+        func size(_ fs: [CGImage]) -> (CGFloat, CGFloat) {
+            (CGFloat(fs.map(\.width).max() ?? 1), CGFloat(fs.map(\.height).max() ?? 1))
+        }
+        let rowScale: [CGFloat] = rows.map { fs in
+            let (w, h) = size(fs)
+            return min(1, maxCellSide / max(w, h))
+        }
+        // 셀 크기: 줄인 뒤의 모든 행을 담는 최소 크기
+        let scaled = zip(rows, rowScale).map { fs, k -> (CGFloat, CGFloat) in
+            let (w, h) = size(fs); return (w * k, h * k)
+        }
+        let cellW = max(1, Int((scaled.map(\.0).max() ?? 1).rounded(.up)))
+        let cellH = max(1, Int((scaled.map(\.1).max() ?? 1).rounded(.up)))
+
         progress("시트 조립 중…")
         let sheetW = cellW * columns, sheetH = cellH * rows.count
         guard let ctx = CGContext(data: nil, width: sheetW, height: sheetH, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpaceCreateDeviceRGB(),
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { throw PetError("비트맵 생성 실패") }
-        ctx.interpolationQuality = shrink < 1 ? .high : .none
+        ctx.interpolationQuality = rowScale.contains { $0 < 1 } ? .high : .none
 
         for (r, frames) in rows.enumerated() {
+            let k = rowScale[r]
             for (c, img) in frames.enumerated() {
-                let w = CGFloat(img.width) * shrink, h = CGFloat(img.height) * shrink
+                let w = CGFloat(img.width) * k, h = CGFloat(img.height) * k
                 // 발이 흔들리지 않게 아래 중앙 정렬 (CG 원점은 좌하단)
                 let x = CGFloat(c * cellW) + (CGFloat(cellW) - w) / 2
                 let y = CGFloat(sheetH) - CGFloat((r + 1) * cellH)
@@ -109,7 +120,10 @@ enum CustomPet {
                                   width: sheet.frameWidth, height: sheet.frameHeight)
                 if let f = sheet.image.cropping(to: rect) { fs.append(f) }
             }
-            if !fs.isEmpty { anims[state] = fs }
+            // 셀째로 꺼내면 주변 여백까지 그림으로 취급돼, 다시 구울 때마다 알맹이가 조금씩 줄어든다
+            // (수정을 반복하면 평소가 23% 씩 계속 작아졌다). 행 공통 상자로 여백을 걷어낸다 —
+            // 프레임마다 자르면 위치 관계가 깨지므로 전 프레임을 아우르는 한 상자로 잘라야 한다.
+            if !fs.isEmpty { anims[state] = ImagePet.cropAll(fs) }
         }
         return anims
     }
@@ -175,7 +189,10 @@ enum CustomPet {
 
     /// 긴 애니메이션을 고르게 표본화해 상한에 맞춘다
     static func sample(_ fs: [CGImage]) -> [CGImage] {
-        guard fs.count > maxFrames else { return fs }
-        return (0..<maxFrames).map { fs[$0 * fs.count / maxFrames] }
+        guard fs.count > maxFrames, maxFrames > 1 else { return fs }
+        // 처음과 **마지막** 프레임을 양 끝으로 잡아 전 구간에서 고르게 뽑는다.
+        // 예전에는 `$0 * count / maxFrames` 라 마지막 1/16 이 통째로 빠졌다 —
+        // 영상에서 잘라낸 GIF 는 끝에서 동작이 완결되는 경우가 많아 그 마무리가 날아갔다.
+        return (0..<maxFrames).map { fs[$0 * (fs.count - 1) / (maxFrames - 1)] }
     }
 }
